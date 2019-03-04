@@ -1,7 +1,6 @@
 package openhours
 
 import (
-	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,7 +29,6 @@ func (o OpenHours) Match(t time.Time) bool {
 		}
 
 	}
-	log.Println(i)
 	if i%2 == 0 {
 		return false
 	}
