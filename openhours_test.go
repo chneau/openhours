@@ -1,7 +1,6 @@
 package openhours
 
 import (
-	"log"
 	"reflect"
 	"testing"
 	"time"
@@ -83,28 +82,49 @@ func Test_simplifyHour(t *testing.T) {
 	}
 }
 
-func Test_feature(t *testing.T) {
+func Test_feature_simple(t *testing.T) {
 	o := New("mo 08:00-18:00")
-	t.Run("Match true", func(t *testing.T) {
-		want := true
-		if got := o.Match(time.Date(2019, 3, 4, 8, 0, 0, 0, location)); got != want {
-			t.Errorf("simplifyHour() got = %v, want %v", got, want)
-		}
-		if got := o.Match(time.Date(2019, 3, 4, 17, 59, 0, 0, location)); got != want {
-			t.Errorf("simplifyHour() got = %v, want %v", got, want)
-		}
-	})
-	t.Run("Match false", func(t *testing.T) {
-		want := false
-		if got := o.Match(time.Date(2019, 3, 4, 7, 0, 0, 0, location)); got != want {
-			t.Errorf("simplifyHour() got = %v, want %v", got, want)
-		}
-		if got := o.Match(time.Date(2019, 3, 4, 18, 0, 0, 0, location)); got != want {
-			t.Errorf("simplifyHour() got = %v, want %v", got, want)
-		}
-		if got := o.Match(time.Date(2019, 3, 4, 19, 0, 0, 0, location)); got != want {
-			t.Errorf("simplifyHour() got = %v, want %v", got, want)
-		}
-	})
-	log.Println(o)
+	tests := []struct {
+		args time.Time
+		want bool
+	}{
+		{time.Date(2019, 3, 4, 8, 0, 0, 0, location), true}, // special case start = true
+		{time.Date(2019, 3, 4, 17, 59, 0, 0, location), true},
+		{time.Date(2019, 3, 4, 18, 0, 0, 0, location), false}, // special case end = false
+		{time.Date(2019, 3, 4, 7, 0, 0, 0, location), false},
+		{time.Date(2019, 3, 4, 19, 0, 0, 0, location), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.args.String(), func(t *testing.T) {
+			if got := o.Match(tt.args); got != tt.want {
+				t.Errorf("simplifyHour() got = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_feature_two(t *testing.T) {
+	o := New("mo 08:00-12:00,13:00-17:00")
+	tests := []struct {
+		args time.Time
+		want bool
+	}{
+		{time.Date(2019, 3, 4, 8, 0, 0, 0, location), true}, // special case start = true
+		{time.Date(2019, 3, 4, 9, 0, 0, 0, location), true},
+		{time.Date(2019, 3, 4, 13, 0, 0, 0, location), true}, // special case start = true
+		{time.Date(2019, 3, 4, 15, 0, 0, 0, location), true},
+		{time.Date(2019, 3, 4, 12, 30, 0, 0, location), false}, // between
+		{time.Date(2019, 3, 4, 17, 59, 0, 0, location), false},
+		{time.Date(2019, 3, 4, 17, 0, 0, 0, location), false}, // special case end = false
+		{time.Date(2019, 3, 4, 12, 0, 0, 0, location), false}, // special case end = false
+		{time.Date(2019, 3, 4, 7, 0, 0, 0, location), false},
+		{time.Date(2019, 3, 4, 19, 0, 0, 0, location), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.args.String(), func(t *testing.T) {
+			if got := o.Match(tt.args); got != tt.want {
+				t.Errorf("simplifyHour() got = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }

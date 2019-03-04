@@ -1,6 +1,7 @@
 package openhours
 
 import (
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -8,9 +9,8 @@ import (
 )
 
 var (
-	weekDays        = map[string]int{"mo": 1, "tu": 2, "we": 3, "th": 4, "fr": 5, "sa": 6, "su": 0}
-	reverseWeekDats = map[int]string{1: "mo", 2: "tu", 3: "we", 4: "th", 5: "fr", 6: "sa", 0: "su"}
-	location        = time.Now().Location()
+	weekDays = map[string]int{"mo": 1, "tu": 2, "we": 3, "th": 4, "fr": 5, "sa": 6, "su": 0}
+	location = time.Now().Location()
 )
 
 // OpenHours ...
@@ -23,10 +23,16 @@ func newDate(day, hour, min, sec, nsec int, loc *time.Location) time.Time {
 // Match returns true if the time t is in the open hours
 func (o OpenHours) Match(t time.Time) bool {
 	t = newDate(int(t.Weekday()), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
-	for i := range o {
+	i := 0
+	for ; i < len(o); i++ {
 		if o[i].After(t) {
-			return false
+			break
 		}
+
+	}
+	log.Println(i)
+	if i%2 == 0 {
+		return false
 	}
 	return true
 }
