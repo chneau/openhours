@@ -131,6 +131,10 @@ func Test_feature_two(t *testing.T) {
 
 func TestOpenHours_NextDur(t *testing.T) {
 	o := New("mo 08:00-18:00")
+	location, err := time.LoadLocation("GMT")
+	if err != nil {
+		t.Error("could not load location")
+	}
 	tests := []struct {
 		name  string
 		args  time.Time

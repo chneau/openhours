@@ -2,20 +2,11 @@
 .ONESHELL:
 .NOTPARALLEL:
 .EXPORT_ALL_VARIABLES:
-.PHONY: run exec build clean deps
+.PHONY: run test deps dev
 
 name=$(shell basename $(CURDIR))
 
-run: build exec clean
-
-exec:
-	./bin/${name}
-
-build:
-	CGO_ENABLED=0 go build -o bin/${name} -ldflags '-s -w -extldflags "-static"'
-
-clean:
-	rm -rf bin
+run: test
 
 test:
 	go test -v -count=1 ./...

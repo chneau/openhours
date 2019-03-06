@@ -7,7 +7,7 @@ Only the `day-day time-time" will work for now.
 
 ## Online tools
 
-https://openingh.openstreetmap.de/evaluation_tool/?setLng=en  
+<https://openingh.openstreetmap.de/evaluation_tool/?setLng=en>
 
 ## Examples of usages
 
