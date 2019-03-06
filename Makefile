@@ -9,7 +9,7 @@ name=$(shell basename $(CURDIR))
 run: test
 
 test:
-	go test -v -count=1 ./...
+	TZ=Europe/London go test -v -count=1 ./...
 
 deps:
 	govendor init
