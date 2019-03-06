@@ -166,6 +166,7 @@ func TestOpenHours_Special_NextDur(t *testing.T) {
 		want1 time.Duration
 	}{
 		{"2 h before (3 if there was no clock change)", time.Date(2019, 3, 31, 0, 0, 0, 0, location), false, time.Hour * 2},
+		{"4 h before (3 if there was no clock change)", time.Date(2019, 10, 27, 0, 0, 0, 0, location), false, time.Hour * 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
