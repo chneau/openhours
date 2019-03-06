@@ -88,11 +88,11 @@ func Test_feature_simple(t *testing.T) {
 		args time.Time
 		want bool
 	}{
-		{time.Date(2019, 3, 4, 8, 0, 0, 0, location), true}, // special case start = true
-		{time.Date(2019, 3, 4, 17, 59, 0, 0, location), true},
-		{time.Date(2019, 3, 4, 18, 0, 0, 0, location), false}, // special case end = false
-		{time.Date(2019, 3, 4, 7, 0, 0, 0, location), false},
-		{time.Date(2019, 3, 4, 19, 0, 0, 0, location), false},
+		{time.Date(2019, 3, 4, 8, 0, 0, 0, o.Location), true}, // special case start = true
+		{time.Date(2019, 3, 4, 17, 59, 0, 0, o.Location), true},
+		{time.Date(2019, 3, 4, 18, 0, 0, 0, o.Location), false}, // special case end = false
+		{time.Date(2019, 3, 4, 7, 0, 0, 0, o.Location), false},
+		{time.Date(2019, 3, 4, 19, 0, 0, 0, o.Location), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.args.String(), func(t *testing.T) {
@@ -109,16 +109,16 @@ func Test_feature_two(t *testing.T) {
 		args time.Time
 		want bool
 	}{
-		{time.Date(2019, 3, 4, 8, 0, 0, 0, location), true}, // special case start = true
-		{time.Date(2019, 3, 4, 9, 0, 0, 0, location), true},
-		{time.Date(2019, 3, 4, 13, 0, 0, 0, location), true}, // special case start = true
-		{time.Date(2019, 3, 4, 15, 0, 0, 0, location), true},
-		{time.Date(2019, 3, 4, 12, 30, 0, 0, location), false}, // between
-		{time.Date(2019, 3, 4, 17, 59, 0, 0, location), false},
-		{time.Date(2019, 3, 4, 17, 0, 0, 0, location), false}, // special case end = false
-		{time.Date(2019, 3, 4, 12, 0, 0, 0, location), false}, // special case end = false
-		{time.Date(2019, 3, 4, 7, 0, 0, 0, location), false},
-		{time.Date(2019, 3, 4, 19, 0, 0, 0, location), false},
+		{time.Date(2019, 3, 4, 8, 0, 0, 0, o.Location), true}, // special case start = true
+		{time.Date(2019, 3, 4, 9, 0, 0, 0, o.Location), true},
+		{time.Date(2019, 3, 4, 13, 0, 0, 0, o.Location), true}, // special case start = true
+		{time.Date(2019, 3, 4, 15, 0, 0, 0, o.Location), true},
+		{time.Date(2019, 3, 4, 12, 30, 0, 0, o.Location), false}, // between
+		{time.Date(2019, 3, 4, 17, 59, 0, 0, o.Location), false},
+		{time.Date(2019, 3, 4, 17, 0, 0, 0, o.Location), false}, // special case end = false
+		{time.Date(2019, 3, 4, 12, 0, 0, 0, o.Location), false}, // special case end = false
+		{time.Date(2019, 3, 4, 7, 0, 0, 0, o.Location), false},
+		{time.Date(2019, 3, 4, 19, 0, 0, 0, o.Location), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.args.String(), func(t *testing.T) {
@@ -133,20 +133,21 @@ func TestOpenHours_NextDur(t *testing.T) {
 	o := New("mo 08:00-18:00")
 	location, err := time.LoadLocation("GMT")
 	if err != nil {
-		t.Error("could not load location")
+		t.Error("could not load o.Location")
 	}
+	o.Location = location
 	tests := []struct {
 		name  string
 		args  time.Time
 		want  bool
 		want1 time.Duration
 	}{
-		{"1 hour before start", time.Date(2019, 3, 4, 7, 0, 0, 0, location), false, time.Hour},
-		{"at start", time.Date(2019, 3, 4, 8, 0, 0, 0, location), true, 10 * time.Hour},
-		{"1 hour after start", time.Date(2019, 3, 4, 9, 0, 0, 0, location), true, 9 * time.Hour},
-		{"1 hour before end", time.Date(2019, 3, 4, 17, 0, 0, 0, location), true, time.Hour},
-		{"at end", time.Date(2019, 3, 4, 18, 0, 0, 0, location), false, time.Hour*24*7 - time.Hour*10},
-		{"1 day after start (closed)", time.Date(2019, 3, 5, 8, 0, 0, 0, location), false, time.Hour * 24 * 6},
+		{"1 hour before start", time.Date(2019, 3, 4, 7, 0, 0, 0, o.Location), false, time.Hour},
+		{"at start", time.Date(2019, 3, 4, 8, 0, 0, 0, o.Location), true, 10 * time.Hour},
+		{"1 hour after start", time.Date(2019, 3, 4, 9, 0, 0, 0, o.Location), true, 9 * time.Hour},
+		{"1 hour before end", time.Date(2019, 3, 4, 17, 0, 0, 0, o.Location), true, time.Hour},
+		{"at end", time.Date(2019, 3, 4, 18, 0, 0, 0, o.Location), false, time.Hour*24*7 - time.Hour*10},
+		{"1 day after start (closed)", time.Date(2019, 3, 5, 8, 0, 0, 0, o.Location), false, time.Hour * 24 * 6},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -169,8 +170,8 @@ func TestOpenHours_Special_NextDur(t *testing.T) {
 		want  bool
 		want1 time.Duration
 	}{
-		{"2 h before (3 if there was no clock change)", time.Date(2019, 3, 31, 0, 0, 0, 0, location), false, time.Hour * 2},
-		{"4 h before (3 if there was no clock change)", time.Date(2019, 10, 27, 0, 0, 0, 0, location), false, time.Hour * 3},
+		{"2 h before (3 if there was no clock change)", time.Date(2019, 3, 31, 0, 0, 0, 0, o.Location), false, time.Hour * 2},
+		{"4 h before (3 if there was no clock change)", time.Date(2019, 10, 27, 0, 0, 0, 0, o.Location), false, time.Hour * 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
