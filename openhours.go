@@ -43,14 +43,21 @@ func (o OpenHours) matchIndex(t time.Time) int {
 // NextDur returns true if t is in the open hours and the duration until it closes
 // else it returns false if t is in the closed hours and the duration until it opens
 func (o OpenHours) NextDur(t time.Time) (bool, time.Duration) {
-	t = newDateFromTime(t)
-	i := o.matchIndex(t)
+	x := newDateFromTime(t)
+	i := o.matchIndex(x)
 	b := i%2 == 1
 	if i == len(o) {
 		i = 0
-		t = t.Add(-time.Hour * 24 * 7) // remove a week
 	}
-	return b, o[i].Sub(t)
+	oi := o[i]
+	if x.After(oi) {
+		oi = oi.Add(time.Hour * 24 * 7) // add a week
+	}
+	diff := oi.Sub(x)
+	_, offset := x.Add(diff).Zone()
+	_, newOffset := t.Add(diff).Zone()
+	diff += time.Duration(time.Duration(offset-newOffset) * time.Second)
+	return b, diff
 }
 
 // NextDate uses nextDur to gives the date of interest
