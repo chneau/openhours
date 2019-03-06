@@ -1,5 +1,7 @@
 # openhours
 
+[![Build Status](https://travis-ci.org/chneau/openhours.svg?branch=master)](https://travis-ci.org/chneau/openhours)
+
 A compromise of complexity of the ["opening_hours"](https://wiki.openstreetmap.org/wiki/Key:opening_hours).  
 Only the `day-day time-time" will work for now.  
 
