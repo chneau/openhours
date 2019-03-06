@@ -156,3 +156,26 @@ func TestOpenHours_NextDur(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenHours_Special_NextDur(t *testing.T) {
+	o := New("su 03:00-05:00")
+	tests := []struct {
+		name  string
+		args  time.Time
+		want  bool
+		want1 time.Duration
+	}{
+		{"2 h before (3 if there was no clock change)", time.Date(2019, 3, 31, 0, 0, 0, 0, location), false, time.Hour * 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, got1 := o.NextDur(tt.args)
+			if got != tt.want {
+				t.Errorf("OpenHours.NextDur() got = %v, want %v", got, tt.want)
+			}
+			if got1 != tt.want1 {
+				t.Errorf("OpenHours.NextDur() got1 = %v, want %v", got1, tt.want1)
+			}
+		})
+	}
+}
