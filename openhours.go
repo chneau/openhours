@@ -27,10 +27,7 @@ func newDateFromTime(t time.Time) time.Time {
 func (o OpenHours) Match(t time.Time) bool {
 	t = newDateFromTime(t)
 	i := o.matchIndex(t)
-	if i%2 == 0 {
-		return false
-	}
-	return true
+	return i%2 == 1
 }
 
 func (o OpenHours) matchIndex(t time.Time) int {
@@ -48,10 +45,7 @@ func (o OpenHours) matchIndex(t time.Time) int {
 func (o OpenHours) NextDur(t time.Time) (bool, time.Duration) {
 	t = newDateFromTime(t)
 	i := o.matchIndex(t)
-	b := true
-	if i%2 == 0 {
-		b = false
-	}
+	b := i%2 == 1
 	if i == len(o) {
 		i = 0
 		t = t.Add(-time.Hour * 24 * 7) // remove a week
