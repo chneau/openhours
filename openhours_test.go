@@ -128,3 +128,31 @@ func Test_feature_two(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenHours_NextDur(t *testing.T) {
+	o := New("mo 08:00-18:00")
+	tests := []struct {
+		name  string
+		args  time.Time
+		want  bool
+		want1 time.Duration
+	}{
+		{"1 hour before start", time.Date(2019, 3, 4, 7, 0, 0, 0, location), false, time.Hour},
+		{"at start", time.Date(2019, 3, 4, 8, 0, 0, 0, location), true, 10 * time.Hour},
+		{"1 hour after start", time.Date(2019, 3, 4, 9, 0, 0, 0, location), true, 9 * time.Hour},
+		{"1 hour before end", time.Date(2019, 3, 4, 17, 0, 0, 0, location), true, time.Hour},
+		{"at end", time.Date(2019, 3, 4, 18, 0, 0, 0, location), false, time.Hour*24*7 - time.Hour*10},
+		{"1 day after start (closed)", time.Date(2019, 3, 5, 8, 0, 0, 0, location), false, time.Hour * 24 * 6},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, got1 := o.NextDur(tt.args)
+			if got != tt.want {
+				t.Errorf("OpenHours.NextDur() got = %v, want %v", got, tt.want)
+			}
+			if got1 != tt.want1 {
+				t.Errorf("OpenHours.NextDur() got1 = %v, want %v", got1, tt.want1)
+			}
+		})
+	}
+}

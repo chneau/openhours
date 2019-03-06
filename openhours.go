@@ -19,20 +19,50 @@ func newDate(day, hour, min, sec, nsec int, loc *time.Location) time.Time {
 	return time.Date(2017, 1, day, hour, min, sec, nsec, loc)
 }
 
+func newDateFromTime(t time.Time) time.Time {
+	return newDate(int(t.Weekday()), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
+}
+
 // Match returns true if the time t is in the open hours
 func (o OpenHours) Match(t time.Time) bool {
-	t = newDate(int(t.Weekday()), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
+	t = newDateFromTime(t)
+	i := o.matchIndex(t)
+	if i%2 == 0 {
+		return false
+	}
+	return true
+}
+
+func (o OpenHours) matchIndex(t time.Time) int {
 	i := 0
 	for ; i < len(o); i++ {
 		if o[i].After(t) {
 			break
 		}
+	}
+	return i
+}
 
-	}
+// NextDur returns true if t is in the open hours and the duration until it closes
+// else it returns false if t is in the closed hours and the duration until it opens
+func (o OpenHours) NextDur(t time.Time) (bool, time.Duration) {
+	t = newDateFromTime(t)
+	i := o.matchIndex(t)
+	b := true
 	if i%2 == 0 {
-		return false
+		b = false
 	}
-	return true
+	if i == len(o) {
+		i = 0
+		t = t.Add(-time.Hour * 24 * 7) // remove a week
+	}
+	return b, o[i].Sub(t)
+}
+
+// NextDate uses nextDur to gives the date of interest
+func (o OpenHours) NextDate(t time.Time) (bool, time.Time) {
+	b, dur := o.NextDur(t)
+	return b, t.Add(dur)
 }
 
 func cleanStr(str string) string {
