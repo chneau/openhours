@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-var weekDays = map[string]int{"mo": 1, "tu": 2, "we": 3, "th": 4, "fr": 5, "sa": 6, "su": 0}
+var weekDays = map[string]int{"su": 0, "mo": 1, "tu": 2, "we": 3, "th": 4, "fr": 5, "sa": 6}
 
 // OpenHours ...
 type OpenHours []time.Time
@@ -92,8 +92,11 @@ func simplifyDays(str string) []int {
 			if !exist {
 				continue
 			}
+			if to < from { // circular lookup
+				to += 7
+			}
 			for i := from; i <= to; i++ {
-				days[i] = struct{}{}
+				days[i%7] = struct{}{}
 			}
 			continue
 		}
@@ -143,6 +146,9 @@ func New(str string, loc *time.Location) OpenHours {
 			}
 		}
 	}
+	sort.Slice(o, func(i, j int) bool {
+		return o[i].Before(o[j])
+	})
 	newT := []time.Time{o[0]}
 	for i := 1; i+1 < len(o); i += 2 {
 		if o[i].Equal(o[i+1]) {
@@ -150,5 +156,6 @@ func New(str string, loc *time.Location) OpenHours {
 		}
 		newT = append(newT, o[i], o[i+1])
 	}
-	return append(newT, o[len(o)-1])
+	newT = append(newT, o[len(o)-1])
+	return newT
 }
