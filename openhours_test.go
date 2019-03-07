@@ -12,7 +12,7 @@ func Test_cleanStr(t *testing.T) {
 		args string
 		want string
 	}{
-		{"nothing", "Mo-Fr 10:00-12:00,12:30-16:00", "mo-fr 10:00-12:00,12:30-16:00"},
+		{"capital letters", "Mo-Fr 10:00-12:00,12:30-16:00", "mo-fr 10:00-12:00,12:30-16:00"},
 		{"comma after space", "Mo-Fr 10:00-12:00, 12:30-16:00", "mo-fr 10:00-12:00,12:30-16:00"},
 		{"comma before space", "Mo-Fr 10:00-12:00 ,12:30-16:00", "mo-fr 10:00-12:00,12:30-16:00"},
 		{"comma before and after space", "Mo-Fr 10:00-12:00 , 12:30-16:00", "mo-fr 10:00-12:00,12:30-16:00"},
@@ -171,7 +171,7 @@ func TestOpenHours_Special_NextDur(t *testing.T) {
 		want1 time.Duration
 	}{
 		{"2 h before (3 if there was no clock change)", time.Date(2019, 3, 31, 0, 0, 0, 0, o.Location), false, time.Hour * 2},
-		{"4 h before (3 if there was no clock change)", time.Date(2019, 10, 27, 0, 0, 0, 0, o.Location), false, time.Hour * 3},
+		{"4 h before (3 if there was no clock change)", time.Date(2019, 10, 27, 0, 0, 0, 0, o.Location), false, time.Hour * 4},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
