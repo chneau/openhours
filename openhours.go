@@ -10,10 +10,7 @@ import (
 var weekDays = map[string]int{"mo": 1, "tu": 2, "we": 3, "th": 4, "fr": 5, "sa": 6, "su": 0}
 
 // OpenHours ...
-type OpenHours struct {
-	t        []time.Time
-	Location *time.Location
-}
+type OpenHours []time.Time
 
 func newDate(day, hour, min, sec, nsec int, loc *time.Location) time.Time {
 	return time.Date(2017, 1, day, hour, min, sec, nsec, loc)
@@ -32,8 +29,8 @@ func (o OpenHours) Match(t time.Time) bool {
 
 func (o OpenHours) matchIndex(t time.Time) int {
 	i := 0
-	for ; i < len(o.t); i++ {
-		if o.t[i].After(t) {
+	for ; i < len(o); i++ {
+		if o[i].After(t) {
 			break
 		}
 	}
@@ -46,10 +43,10 @@ func (o OpenHours) NextDur(t time.Time) (bool, time.Duration) {
 	x := newDateFromTime(t)
 	i := o.matchIndex(x)
 	b := i%2 == 1
-	if i == len(o.t) {
+	if i == len(o) {
 		i = 0
 	}
-	oi := o.t[i]
+	oi := o[i]
 	if x.After(oi) {
 		oi = oi.Add(time.Hour * 24 * 7) // add a week
 	}
@@ -87,9 +84,6 @@ func simplifyDays(str string) []int {
 			continue
 		case 5: // "tu-fr"
 			strs := strings.Split(str, "-")
-			if len(strs) != 2 {
-				continue
-			}
 			from, exist := weekDays[strs[0]]
 			if !exist {
 				continue
@@ -126,14 +120,18 @@ func simplifyHour(str string) (int, int) {
 }
 
 // New returns a new instance of an openhours
-func New(str string) *OpenHours {
-	o := OpenHours{
-		Location: time.Now().Location(),
+func New(str string, loc *time.Location) OpenHours {
+	if loc == nil {
+		loc = time.UTC
+	}
+	o := OpenHours{}
+	if len(str) > 0 && str[len(str)-1] == ';' {
+		str = str[:len(str)-1]
+	}
+	if str == "" {
+		str = "su-sa 00:00-24:00"
 	}
 	for _, str := range strings.Split(cleanStr(str), ";") {
-		if len(str) == 0 { // empty case
-			continue
-		}
 		strs := strings.Fields(str)
 		days := simplifyDays(strs[0])
 		for _, str := range strings.Split(strs[1], ",") {
@@ -141,9 +139,16 @@ func New(str string) *OpenHours {
 			hourFrom, minFrom := simplifyHour(times[0])
 			hourTo, minTo := simplifyHour(times[1])
 			for _, day := range days {
-				o.t = append(o.t, newDate(day, hourFrom, minFrom, 0, 0, o.Location), newDate(day, hourTo, minTo, 0, 0, o.Location))
+				o = append(o, newDate(day, hourFrom, minFrom, 0, 0, loc), newDate(day, hourTo, minTo, 0, 0, loc))
 			}
 		}
 	}
-	return &o
+	newT := []time.Time{o[0]}
+	for i := 1; i+1 < len(o); i += 2 {
+		if o[i].Equal(o[i+1]) {
+			continue
+		}
+		newT = append(newT, o[i], o[i+1])
+	}
+	return append(newT, o[len(o)-1])
 }
