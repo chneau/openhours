@@ -54,7 +54,7 @@ func (o OpenHours) NextDur(t time.Time) (bool, time.Duration) {
 		oi = oi.Add(time.Hour * 24 * 7) // add a week
 	}
 	diff := oi.Sub(x)
-	_, offset := x.Add(diff).Zone()
+	_, offset := t.Zone()
 	_, newOffset := t.Add(diff).Zone()
 	diff += time.Duration(time.Duration(offset-newOffset) * time.Second)
 	return b, diff
