@@ -122,12 +122,11 @@ func simplifyHour(str string) (int, int) {
 	return hour, min
 }
 
-// New returns a new instance of an openhours
-func New(str string, loc *time.Location) OpenHours {
+func new(str string, loc *time.Location) OpenHours {
 	if loc == nil {
 		loc = time.UTC
 	}
-	o := OpenHours{}
+	o := []time.Time{}
 	if len(str) > 0 && str[len(str)-1] == ';' {
 		str = str[:len(str)-1]
 	}
@@ -146,16 +145,46 @@ func New(str string, loc *time.Location) OpenHours {
 			}
 		}
 	}
-	sort.Slice(o, func(i, j int) bool {
-		return o[i].Before(o[j])
-	})
-	newT := []time.Time{o[0]}
-	for i := 1; i+1 < len(o); i += 2 {
-		if o[i].Equal(o[i+1]) {
-			continue
+	return o
+}
+
+func merge4(o ...time.Time) (perform bool, newO []time.Time) {
+	perform = false
+	for i := 0; i < len(o)-1; i++ {
+		if o[i].After(o[i+1]) || o[i].Equal(o[i+1]) {
+			perform = true
 		}
-		newT = append(newT, o[i], o[i+1])
 	}
-	newT = append(newT, o[len(o)-1])
-	return newT
+	if perform {
+		sort.Slice(o, func(i, j int) bool {
+			return o[i].Before(o[j])
+		})
+		newO = append(newO, o[0], o[len(o)-1])
+	}
+	return perform, newO
+}
+
+func merge(o []time.Time) []time.Time {
+	sort.SliceStable(o, func(i, j int) bool {
+		return o[i].Day() > o[j].Day()
+	})
+	for i := 0; i < len(o); i += 2 {
+		for j := i + 2; j < len(o); j += 2 {
+			perform, res := merge4(o[i], o[i+1], o[j], o[j+1])
+			if !perform {
+				continue
+			}
+			o[i], o[i+1] = res[0], res[1]
+			o = append(o[:j], o[j+2:]...)
+			i -= 2
+			break
+		}
+	}
+	return o
+}
+
+// New returns a new instance of an openhours
+func New(str string, loc *time.Location) OpenHours {
+	o := new(str, loc)
+	return merge(o)
 }

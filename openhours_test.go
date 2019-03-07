@@ -210,7 +210,11 @@ func TestNew(t *testing.T) {
 		{"complex = simple", "su-sa 00:00-12:00,12:00-24:00", l, New("", l)},
 		{"complex = simple", "su-sa 00:00-12:00;su-sa 12:00-24:00", l, New("", l)},
 		{"time windows order does not matter anymore", "mo-su 00:00-24:00", l, New("", l)},
-		// overlapping to do
+		{"weird times in same sentence", "mo-fr 00:00-15:00,10:00-24:00", l, New("mo-fr 00:00-24:00", l)},
+		{"weird times in same sentence one contained", "mo-fr 10:00-15:00,00:00-24:00", l, New("mo-fr 00:00-24:00", l)},
+		{"weird times in different sentence", "mo-fr 00:00-15:00;mo-fr 10:00-24:00", l, New("mo-fr 00:00-24:00", l)},
+		{"weird times in different sentence contained", "mo-fr 10:00-15:00;mo-fr 00:00-24:00", l, New("mo-fr 00:00-24:00", l)},
+		{"total chaos", "tu-fr 10:00-15:00;mo 08:00-09:00;mo-fr 00:00-24:00", l, New("mo-fr 00:00-24:00", l)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
