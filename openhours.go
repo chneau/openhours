@@ -57,6 +57,45 @@ func (o OpenHours) NextDur(t time.Time) (bool, time.Duration) {
 	return b, diff
 }
 
+// When returns the date where the duration can be done in one go during open hours
+func (o OpenHours) When(t time.Time, d time.Duration) *time.Time {
+	x := newDateFromTime(t)
+	i := o.matchIndex(x)
+	var found *time.Time
+	if i%2 == 1 {
+		newO := x.Add(d)
+		// log.Println(x, newO, o[i], newO.Before(o[i]) || newO.Equal(o[i]), i, o)
+		if newO.Before(o[i]) || newO.Equal(o[i]) {
+			found = &x
+		} else {
+			i += 2
+		}
+	} else {
+		i++
+	}
+	for max := i + len(o); i < max && found == nil; i += 2 {
+		newI := i % len(o)
+		newO := o[newI-1].Add(d)
+		if newO.Before(o[newI]) || newO.Equal(o[newI]) {
+			found = &o[newI-1]
+		}
+	}
+	if found == nil {
+		return found
+	}
+	if x.After(*found) {
+		z := found.Add(time.Hour * 24 * 7) // add a week
+		found = &z
+	}
+	diff := found.Sub(x)
+	_, offset := t.Zone()
+	_, newOffset := t.Add(diff).Zone()
+	diff += time.Duration(time.Duration(offset-newOffset) * time.Second)
+	f := t.Add(diff)
+	found = &f
+	return found
+}
+
 // NextDate uses nextDur to gives the date of interest
 func (o OpenHours) NextDate(t time.Time) (bool, time.Time) {
 	b, dur := o.NextDur(t)
@@ -148,25 +187,21 @@ func new(str string, loc *time.Location) OpenHours {
 	return o
 }
 
-func merge4(o ...time.Time) (perform bool, newO []time.Time) {
-	perform = false
+func merge4(o ...time.Time) (bool, []time.Time) {
 	for i := 0; i < len(o)-1; i++ {
 		if o[i].After(o[i+1]) || o[i].Equal(o[i+1]) {
-			perform = true
+			sort.Slice(o, func(i, j int) bool {
+				return o[i].Before(o[j])
+			})
+			return true, []time.Time{o[0], o[len(o)-1]}
 		}
 	}
-	if perform {
-		sort.Slice(o, func(i, j int) bool {
-			return o[i].Before(o[j])
-		})
-		newO = append(newO, o[0], o[len(o)-1])
-	}
-	return perform, newO
+	return false, nil
 }
 
 func merge(o []time.Time) []time.Time {
 	sort.SliceStable(o, func(i, j int) bool {
-		return o[i].Day() > o[j].Day()
+		return o[i].Day() < o[j].Day()
 	})
 	for i := 0; i < len(o); i += 2 {
 		for j := i + 2; j < len(o); j += 2 {
