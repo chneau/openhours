@@ -50,11 +50,15 @@ func (o OpenHours) NextDur(t time.Time) (bool, time.Duration) {
 	if x.After(oi) {
 		oi = oi.Add(time.Hour * 24 * 7) // add a week
 	}
-	diff := oi.Sub(x)
+	return b, tzDiff(oi, x, t)
+}
+
+// tzDiff calculate diff between a and b and add it to t, taking in account eventual tz changes
+func tzDiff(a, b, t time.Time) time.Duration {
+	diff := a.Sub(b)
 	_, offset := t.Zone()
 	_, newOffset := t.Add(diff).Zone()
-	diff += time.Duration(time.Duration(offset-newOffset) * time.Second)
-	return b, diff
+	return diff + time.Duration(offset-newOffset)*time.Second
 }
 
 // When returns the date where the duration can be done in one go during open hours
@@ -87,13 +91,8 @@ func (o OpenHours) When(t time.Time, d time.Duration) *time.Time {
 		z := found.Add(time.Hour * 24 * 7) // add a week
 		found = &z
 	}
-	diff := found.Sub(x)
-	_, offset := t.Zone()
-	_, newOffset := t.Add(diff).Zone()
-	diff += time.Duration(time.Duration(offset-newOffset) * time.Second)
-	f := t.Add(diff)
-	found = &f
-	return found
+	f := t.Add(tzDiff(*found, x, t))
+	return &f
 }
 
 // NextDate uses nextDur to gives the date of interest
