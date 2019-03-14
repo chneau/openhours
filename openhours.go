@@ -48,7 +48,7 @@ func (o OpenHours) NextDur(t time.Time) (bool, time.Duration) {
 	}
 	oi := o[i]
 	if x.After(oi) {
-		oi = oi.Add(time.Hour * 24 * 7) // add a week
+		oi = oi.AddDate(0, 0, 7)
 	}
 	return b, tzDiff(oi, x, t)
 }
@@ -88,7 +88,7 @@ func (o OpenHours) When(t time.Time, d time.Duration) *time.Time {
 		return found
 	}
 	if x.After(*found) {
-		z := found.Add(time.Hour * 24 * 7) // add a week
+		z := found.AddDate(0, 0, 7)
 		found = &z
 	}
 	f := t.Add(tzDiff(*found, x, t))
