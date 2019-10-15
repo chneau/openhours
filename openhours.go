@@ -154,7 +154,7 @@ func simplifyHour(str string) (int, int) {
 	}
 	hour, _ = strconv.Atoi(strs[0])
 	min, _ = strconv.Atoi(strs[1])
-	if hour > 24 || hour < 0 || min > 60 || min < 0 || (hour == 24 && min > 0) {
+	if hour > 24 || hour < 0 || min > 60 || min < 0 || (hour == 24 && min > 0) { // TODO fix case 15:60
 		return 0, 0
 	}
 	return hour, min
