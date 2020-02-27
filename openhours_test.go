@@ -308,11 +308,11 @@ func TestOpenHours_Add(t *testing.T) {
 		args args
 		want *time.Time
 	}{
-		{"at start of open and have time", func() OpenHours {
-			o := OpenHours{}
-			o.Add(time.Date(2019, 3, 11, 10, 0, 0, 0, l), time.Date(2019, 3, 11, 10, 30, 0, 0, l)) // mo 10:00-10:30
-			return o
-		}(), args{time.Date(2019, 3, 11, 9, 0, 0, 0, l), time.Second}, pDate(2019, 3, 11, 10, 0, 0, 0, l)},
+		{
+			"at start of open and have time",
+			OpenHours{}.Add(time.Date(2019, 3, 11, 10, 0, 0, 0, l), time.Date(2019, 3, 11, 10, 30, 0, 0, l)), // mo 10:00-10:30
+			args{time.Date(2019, 3, 11, 9, 0, 0, 0, l), time.Second}, pDate(2019, 3, 11, 10, 0, 0, 0, l),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
