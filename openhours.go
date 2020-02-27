@@ -146,18 +146,22 @@ func simplifyDays(str string) []int {
 	return simple
 }
 
-func simplifyHour(str string) (int, int) {
+func simplifyTime(str string) (int, int, int) {
 	hour, min := 0, 0
 	strs := strings.Split(str, ":")
-	if len(strs) != 2 {
-		return 0, 0
+	if len(strs) < 2 || len(strs) > 3 {
+		return 0, 0, 0
 	}
 	hour, _ = strconv.Atoi(strs[0])
 	min, _ = strconv.Atoi(strs[1])
-	if hour > 24 || hour < 0 || min > 60 || min < 0 || (hour == 24 && min > 0) { // TODO fix case 15:60
-		return 0, 0
+	var sec int
+	if len(strs) == 3 {
+		sec, _ = strconv.Atoi(strs[2])
 	}
-	return hour, min
+	if hour > 24 || hour < 0 || min > 59 || min < 0 || sec > 59 || sec < 0 || (hour == 24 && min > 0 || hour == 24 && sec > 0) {
+		return 0, 0, 0
+	}
+	return hour, min, sec
 }
 
 func new(str string, loc *time.Location) OpenHours {
@@ -176,10 +180,10 @@ func new(str string, loc *time.Location) OpenHours {
 		days := simplifyDays(strs[0])
 		for _, str := range strings.Split(strs[1], ",") {
 			times := strings.Split(str, "-")
-			hourFrom, minFrom := simplifyHour(times[0])
-			hourTo, minTo := simplifyHour(times[1])
+			hourFrom, minFrom, secFrom := simplifyTime(times[0])
+			hourTo, minTo, secTo := simplifyTime(times[1])
 			for _, day := range days {
-				o = append(o, newDate(day, hourFrom, minFrom, 0, 0, loc), newDate(day, hourTo, minTo, 0, 0, loc))
+				o = append(o, newDate(day, hourFrom, minFrom, secFrom, 0, loc), newDate(day, hourTo, minTo, secTo, 0, loc))
 			}
 		}
 	}

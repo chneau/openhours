@@ -72,24 +72,30 @@ func Test_simplifyHour(t *testing.T) {
 		args  string
 		want  int
 		want1 int
+		want2 int
 	}{
-		{"00:00", 0, 0},
-		{"10:30", 10, 30},
-		{"09:05", 9, 5},
-		{"24:00", 24, 0},
-		{"00:-10", 0, 0},
-		{"24:01", 0, 0},
-		{"-50:99", 0, 0},
-		{"33:33:33", 0, 0},
+		{"00:00", 0, 0, 0},
+		{"00:00:00", 0, 0, 0},
+		{"00:00:05", 0, 0, 5},
+		{"10:30", 10, 30, 0},
+		{"09:05", 9, 5, 0},
+		{"24:00", 24, 0, 0},
+		{"00:-10", 0, 0, 0},
+		{"24:01", 0, 0, 0},
+		{"-50:99", 0, 0, 0},
+		{"33:33:33", 0, 0, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.args, func(t *testing.T) {
-			got, got1 := simplifyHour(tt.args)
+			got, got1, got2 := simplifyTime(tt.args)
 			if got != tt.want {
 				t.Errorf("simplifyHour() got = %v, want %v", got, tt.want)
 			}
 			if got1 != tt.want1 {
 				t.Errorf("simplifyHour() got1 = %v, want %v", got1, tt.want1)
+			}
+			if got2 != tt.want2 {
+				t.Errorf("simplifyHour() got2 = %v, want %v", got2, tt.want2)
 			}
 		})
 	}
