@@ -101,6 +101,11 @@ func (o OpenHours) NextDate(t time.Time) (bool, time.Time) {
 	return b, t.Add(dur)
 }
 
+func (o *OpenHours) Add(from, to time.Time) {
+	*o = append(*o, newDateFromTime(from), newDateFromTime(to))
+	*o = merge(*o)
+}
+
 func cleanStr(str string) string {
 	clean := strings.TrimSpace(str)
 	clean = strings.Join(strings.Fields(clean), " ")

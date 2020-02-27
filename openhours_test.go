@@ -296,3 +296,29 @@ func TestOpenHours_When(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenHours_Add(t *testing.T) {
+	type args struct {
+		t time.Time
+		d time.Duration
+	}
+	tests := []struct {
+		name string
+		o    OpenHours
+		args args
+		want *time.Time
+	}{
+		{"at start of open and have time", func() OpenHours {
+			o := OpenHours{}
+			o.Add(time.Date(2019, 3, 11, 10, 0, 0, 0, l), time.Date(2019, 3, 11, 10, 30, 0, 0, l)) // mo 10:00-10:30
+			return o
+		}(), args{time.Date(2019, 3, 11, 9, 0, 0, 0, l), time.Second}, pDate(2019, 3, 11, 10, 0, 0, 0, l)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.o.When(tt.args.t, tt.args.d); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("OpenHours.When() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
