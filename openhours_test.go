@@ -311,7 +311,8 @@ func TestOpenHours_Add(t *testing.T) {
 		{
 			"at start of open and have time",
 			OpenHours{}.Add(time.Date(2019, 3, 11, 10, 0, 0, 0, l), time.Date(2019, 3, 11, 10, 30, 0, 0, l)), // mo 10:00-10:30
-			args{time.Date(2019, 3, 11, 9, 0, 0, 0, l), time.Second}, pDate(2019, 3, 11, 10, 0, 0, 0, l),
+			args{time.Date(2019, 3, 11, 9, 0, 0, 0, l), time.Second},
+			pDate(2019, 3, 11, 10, 0, 0, 0, l),
 		},
 	}
 	for _, tt := range tests {
@@ -320,5 +321,14 @@ func TestOpenHours_Add(t *testing.T) {
 				t.Errorf("OpenHours.When() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestOpenHours_Bugs(t *testing.T) {
+	oh := New("mo-su 07:00-19:00", time.UTC)
+	when := oh.When(time.Date(2020, 4, 26, 9, 0, 0, 0, time.UTC), time.Hour)
+	want := time.Date(2020, 4, 26, 9, 0, 0, 0, time.UTC)
+	if when == nil || when != nil && !want.Equal(*when) {
+		t.Errorf("OpenHours.When() = %v, want %v", when, want)
 	}
 }
