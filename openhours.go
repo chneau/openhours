@@ -227,8 +227,19 @@ func merge(o []time.Time) []time.Time {
 	return o
 }
 
-// New returns a new instance of an openhours
+// New returns a new instance of an openhours.
+// If loc is nil, UTC is used.
 func New(str string, loc *time.Location) OpenHours {
 	o := new(str, loc)
 	return merge(o)
+}
+
+// NewLocal returns a new instance of an openhours with local timezone
+func NewLocal(str string) OpenHours {
+	return New(str, time.Local)
+}
+
+// NewUTC returns a new instance of an openhours with UTC timezone
+func NewUTC(str string) OpenHours {
+	return New(str, time.UTC)
 }
