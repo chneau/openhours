@@ -189,6 +189,9 @@ func new(str string, loc *time.Location) (OpenHours, error) {
 	}
 	for _, str := range strings.Split(cleanStr(str), ";") {
 		strs := strings.Fields(str)
+		if len(strs) < 2 {
+			return nil, ErrInvalidFormat
+		}
 		days := simplifyDays(strs[0])
 		for _, str := range strings.Split(strs[1], ",") {
 			times := strings.Split(str, "-")
