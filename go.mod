@@ -1,3 +1,3 @@
-module github.com/chneau/openhours
+module github.com/Vivino/openhours
 
 go 1.20
