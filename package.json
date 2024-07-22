@@ -1,6 +1,7 @@
 {
-  "scripts": {
-    "start": "go test -cover -count=1 ./...",
-    "update": "rm -f go.mod go.sum && go mod init && go get -u && go mod tidy"
-  }
+	"scripts": {
+		"start": "go test -cover -count=1 ./...",
+		"watch": "nodemon --exec 'go test -cover -count=1 ./...' --ext go",
+		"update": "rm -f go.mod go.sum && go mod init && go get -u && go mod tidy"
+	}
 }
