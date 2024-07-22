@@ -1,13 +1,19 @@
 package openhours
 
 import (
+	"errors"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
-var weekDays = map[string]int{"su": 0, "mo": 1, "tu": 2, "we": 3, "th": 4, "fr": 5, "sa": 6}
+var (
+	weekDays = map[string]int{"su": 0, "mo": 1, "tu": 2, "we": 3, "th": 4, "fr": 5, "sa": 6}
+
+	// Errors
+	ErrInvalidFormat error = errors.New("invalid format")
+)
 
 // OpenHours ...
 type OpenHours []time.Time
@@ -170,7 +176,7 @@ func simplifyTime(str string) (int, int, int) {
 	return hour, min, sec
 }
 
-func new(str string, loc *time.Location) OpenHours {
+func new(str string, loc *time.Location) (OpenHours, error) {
 	if loc == nil {
 		loc = time.UTC
 	}
@@ -183,9 +189,15 @@ func new(str string, loc *time.Location) OpenHours {
 	}
 	for _, str := range strings.Split(cleanStr(str), ";") {
 		strs := strings.Fields(str)
+		if len(strs) < 2 {
+			return nil, ErrInvalidFormat
+		}
 		days := simplifyDays(strs[0])
 		for _, str := range strings.Split(strs[1], ",") {
 			times := strings.Split(str, "-")
+			if len(times) != 2 {
+				return nil, ErrInvalidFormat
+			}
 			hourFrom, minFrom, secFrom := simplifyTime(times[0])
 			hourTo, minTo, secTo := simplifyTime(times[1])
 			for _, day := range days {
@@ -193,7 +205,7 @@ func new(str string, loc *time.Location) OpenHours {
 			}
 		}
 	}
-	return o
+	return o, nil
 }
 
 func merge4(o ...time.Time) (bool, []time.Time) {
@@ -229,17 +241,27 @@ func merge(o []time.Time) []time.Time {
 
 // New returns a new instance of an openhours.
 // If loc is nil, UTC is used.
-func New(str string, loc *time.Location) OpenHours {
-	o := new(str, loc)
+func New(str string, loc *time.Location) (OpenHours, error) {
+	o, err := new(str, loc)
+	return merge(o), err
+}
+
+// NewMust returns a new instance of an openhours or panics on error
+// If loc is nil, UTC is used.
+func NewMust(str string, loc *time.Location) OpenHours {
+	o, err := new(str, loc)
+	if err != nil {
+		panic(err)
+	}
 	return merge(o)
 }
 
 // NewLocal returns a new instance of an openhours with local timezone
-func NewLocal(str string) OpenHours {
+func NewLocal(str string) (OpenHours, error) {
 	return New(str, time.Local)
 }
 
 // NewUTC returns a new instance of an openhours with UTC timezone
-func NewUTC(str string) OpenHours {
+func NewUTC(str string) (OpenHours, error) {
 	return New(str, time.UTC)
 }
