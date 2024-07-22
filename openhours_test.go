@@ -2,6 +2,7 @@ package openhours
 
 import (
 	"reflect"
+	"runtime/debug"
 	"testing"
 	"time"
 )
@@ -10,7 +11,7 @@ var l *time.Location
 
 func init() {
 	var err error
-	l, err = time.LoadLocation("Europe/London") // is a goot test example since i know when the two clock change occur
+	l, err = time.LoadLocation("Europe/London") // is a good test example since i know when the two clock change occur
 	if err != nil {
 		panic("could not load location")
 	}
@@ -102,7 +103,10 @@ func Test_simplifyHour(t *testing.T) {
 }
 
 func Test_feature_simple(t *testing.T) {
-	o := New("mo 08:00-18:00", l)
+	o, err := New("mo 08:00-18:00", l)
+	if err != nil {
+		t.Error(err)
+	}
 	tests := []struct {
 		args time.Time
 		want bool
@@ -123,7 +127,10 @@ func Test_feature_simple(t *testing.T) {
 }
 
 func Test_feature_two(t *testing.T) {
-	o := New("mo 08:00-12:00,13:00-17:00", l)
+	o, err := New("mo 08:00-12:00,13:00-17:00", l)
+	if err != nil {
+		t.Error(err)
+	}
 	tests := []struct {
 		args time.Time
 		want bool
@@ -149,7 +156,10 @@ func Test_feature_two(t *testing.T) {
 }
 
 func TestOpenHours_NextDur(t *testing.T) {
-	o := New("mo 08:00-18:00", l)
+	o, err := New("mo 08:00-18:00", l)
+	if err != nil {
+		t.Error(err)
+	}
 	tests := []struct {
 		name  string
 		args  time.Time
@@ -177,7 +187,10 @@ func TestOpenHours_NextDur(t *testing.T) {
 }
 
 func TestOpenHours_Special_NextDur(t *testing.T) {
-	o := New("su 03:00-05:00", l)
+	o, err := New("su 03:00-05:00", l)
+	if err != nil {
+		t.Error(err)
+	}
 	tests := []struct {
 		name  string
 		args  time.Time
@@ -211,22 +224,25 @@ func TestNew(t *testing.T) {
 		{"empty ;", ";", l, []time.Time{newDate(0, 0, 0, 0, 0, l), newDate(7, 0, 0, 0, 0, l)}},
 		{"all day ;", "su-sa 00:00-24:00;", l, []time.Time{newDate(0, 0, 0, 0, 0, l), newDate(7, 0, 0, 0, 0, l)}},
 		{"empty and no tz", "", nil, []time.Time{newDate(0, 0, 0, 0, 0, time.UTC), newDate(7, 0, 0, 0, 0, time.UTC)}},
-		{"order on same sentense", "mo,tu 10:00-11:00", nil, New("tu,mo 10:00-11:00", nil)},
-		{"order on different sentenses", "mo 10:00-11:00;tu 10:00-12:00", nil, New("tu 10:00-12:00;mo 10:00-11:00", nil)},
-		{"complex = simple", "su-sa 00:00-12:00,12:00-24:00", l, New("", l)},
-		{"complex = simple", "su-sa 00:00-12:00;su-sa 12:00-24:00", l, New("", l)},
-		{"time windows order does not matter anymore", "mo-su 00:00-24:00", l, New("", l)},
-		{"weird times in same sentence", "mo-fr 00:00-15:00,10:00-24:00", l, New("mo-fr 00:00-24:00", l)},
-		{"weird times in same sentence one contained", "mo-fr 10:00-15:00,00:00-24:00", l, New("mo-fr 00:00-24:00", l)},
-		{"weird times in different sentence", "mo-fr 00:00-15:00;mo-fr 10:00-24:00", l, New("mo-fr 00:00-24:00", l)},
-		{"weird times in different sentence contained", "mo-fr 10:00-15:00;mo-fr 00:00-24:00", l, New("mo-fr 00:00-24:00", l)},
-		{"total chaos", "tu-fr 10:00-15:00;mo 08:00-09:00;mo-fr 00:00-24:00", l, New("mo-fr 00:00-24:00", l)},
+		{"order on same sentense", "mo,tu 10:00-11:00", nil, NewMust("tu,mo 10:00-11:00", nil)},
+		{"order on different sentenses", "mo 10:00-11:00;tu 10:00-12:00", nil, NewMust("tu 10:00-12:00;mo 10:00-11:00", nil)},
+		{"complex = simple", "su-sa 00:00-12:00,12:00-24:00", l, NewMust("", l)},
+		{"complex = simple", "su-sa 00:00-12:00;su-sa 12:00-24:00", l, NewMust("", l)},
+		{"time windows order does not matter anymore", "mo-su 00:00-24:00", l, NewMust("", l)},
+		{"weird times in same sentence", "mo-fr 00:00-15:00,10:00-24:00", l, NewMust("mo-fr 00:00-24:00", l)},
+		{"weird times in same sentence one contained", "mo-fr 10:00-15:00,00:00-24:00", l, NewMust("mo-fr 00:00-24:00", l)},
+		{"weird times in different sentence", "mo-fr 00:00-15:00;mo-fr 10:00-24:00", l, NewMust("mo-fr 00:00-24:00", l)},
+		{"weird times in different sentence contained", "mo-fr 10:00-15:00;mo-fr 00:00-24:00", l, NewMust("mo-fr 00:00-24:00", l)},
+		{"total chaos", "tu-fr 10:00-15:00;mo 08:00-09:00;mo-fr 00:00-24:00", l, NewMust("mo-fr 00:00-24:00", l)},
 		{"one day", "mo 10:00-15:00", l, []time.Time{newDate(1, 10, 0, 0, 0, l), newDate(1, 15, 0, 0, 0, l)}},
 		{"two days", "mo 10:00-15:00;fr 08:00-14:00", l, []time.Time{newDate(1, 10, 0, 0, 0, l), newDate(1, 15, 0, 0, 0, l), newDate(5, 8, 0, 0, 0, l), newDate(5, 14, 0, 0, 0, l)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := New(tt.args, tt.args2)
+			got, err := New(tt.args, tt.args2)
+			if err != nil {
+				t.Error(err)
+			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("New() = %v, want %v", got, tt.want)
 			}
@@ -235,7 +251,10 @@ func TestNew(t *testing.T) {
 }
 
 func TestOpenHours_NextDate(t *testing.T) {
-	o := New("su 03:00-05:00", l)
+	o, err := New("su 03:00-05:00", l)
+	if err != nil {
+		t.Error(err)
+	}
 	tests := []struct {
 		name  string
 		args  time.Time
@@ -274,19 +293,19 @@ func TestOpenHours_When(t *testing.T) {
 		args args
 		want *time.Time
 	}{
-		{"at start of open and have time", New("mo 10:00-15:00", l), args{time.Date(2019, 3, 11, 10, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 11, 10, 0, 0, 0, l)},
-		{"before start of open and have time", New("mo 10:00-15:00", l), args{time.Date(2019, 3, 11, 9, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 11, 10, 0, 0, 0, l)},
-		{"at end of open and have time", New("mo 10:00-15:00", l), args{time.Date(2019, 3, 11, 15, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 18, 10, 0, 0, 0, l)},
-		{"after end of open and have time", New("mo 10:00-15:00", l), args{time.Date(2019, 3, 11, 16, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 18, 10, 0, 0, 0, l)},
-		{"between open and have time", New("mo 10:00-15:00", l), args{time.Date(2019, 3, 11, 11, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 11, 11, 0, 0, 0, l)},
-		{"between open and no time", New("mo 10:00-15:00", l), args{time.Date(2019, 3, 11, 14, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 18, 10, 0, 0, 0, l)},
-		{"no time", New("mo 10:00-11:00", l), args{time.Date(2019, 3, 11, 14, 0, 0, 0, l), time.Hour * 4}, nil},
-		{"at start of open and have time +fri", New("mo 10:00-15:00;fr 08:00-14:00", l), args{time.Date(2019, 3, 11, 10, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 11, 10, 0, 0, 0, l)},
-		{"before start of open and have time +fri", New("mo 10:00-15:00;fr 08:00-14:00", l), args{time.Date(2019, 3, 11, 9, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 11, 10, 0, 0, 0, l)},
-		{"at end of open and have time +fri", New("mo 10:00-15:00;fr 08:00-14:00", l), args{time.Date(2019, 3, 11, 15, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 15, 8, 0, 0, 0, l)},
-		{"after end of open and have time +fri", New("mo 10:00-15:00;fr 08:00-14:00", l), args{time.Date(2019, 3, 11, 16, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 15, 8, 0, 0, 0, l)},
-		{"between open and have time +fri", New("mo 10:00-15:00;fr 08:00-14:00", l), args{time.Date(2019, 3, 11, 11, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 11, 11, 0, 0, 0, l)},
-		{"between open and no time +fri", New("mo 10:00-15:00;fr 08:00-14:00", l), args{time.Date(2019, 3, 11, 14, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 15, 8, 0, 0, 0, l)},
+		{"at start of open and have time", NewMust("mo 10:00-15:00", l), args{time.Date(2019, 3, 11, 10, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 11, 10, 0, 0, 0, l)},
+		{"before start of open and have time", NewMust("mo 10:00-15:00", l), args{time.Date(2019, 3, 11, 9, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 11, 10, 0, 0, 0, l)},
+		{"at end of open and have time", NewMust("mo 10:00-15:00", l), args{time.Date(2019, 3, 11, 15, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 18, 10, 0, 0, 0, l)},
+		{"after end of open and have time", NewMust("mo 10:00-15:00", l), args{time.Date(2019, 3, 11, 16, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 18, 10, 0, 0, 0, l)},
+		{"between open and have time", NewMust("mo 10:00-15:00", l), args{time.Date(2019, 3, 11, 11, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 11, 11, 0, 0, 0, l)},
+		{"between open and no time", NewMust("mo 10:00-15:00", l), args{time.Date(2019, 3, 11, 14, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 18, 10, 0, 0, 0, l)},
+		{"no time", NewMust("mo 10:00-11:00", l), args{time.Date(2019, 3, 11, 14, 0, 0, 0, l), time.Hour * 4}, nil},
+		{"at start of open and have time +fri", NewMust("mo 10:00-15:00;fr 08:00-14:00", l), args{time.Date(2019, 3, 11, 10, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 11, 10, 0, 0, 0, l)},
+		{"before start of open and have time +fri", NewMust("mo 10:00-15:00;fr 08:00-14:00", l), args{time.Date(2019, 3, 11, 9, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 11, 10, 0, 0, 0, l)},
+		{"at end of open and have time +fri", NewMust("mo 10:00-15:00;fr 08:00-14:00", l), args{time.Date(2019, 3, 11, 15, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 15, 8, 0, 0, 0, l)},
+		{"after end of open and have time +fri", NewMust("mo 10:00-15:00;fr 08:00-14:00", l), args{time.Date(2019, 3, 11, 16, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 15, 8, 0, 0, 0, l)},
+		{"between open and have time +fri", NewMust("mo 10:00-15:00;fr 08:00-14:00", l), args{time.Date(2019, 3, 11, 11, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 11, 11, 0, 0, 0, l)},
+		{"between open and no time +fri", NewMust("mo 10:00-15:00;fr 08:00-14:00", l), args{time.Date(2019, 3, 11, 14, 0, 0, 0, l), time.Hour * 4}, pDate(2019, 3, 15, 8, 0, 0, 0, l)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -325,10 +344,26 @@ func TestOpenHours_Add(t *testing.T) {
 }
 
 func TestOpenHours_Bugs(t *testing.T) {
-	oh := New("mo-su 07:00-19:00", time.UTC)
-	when := oh.When(time.Date(2020, 4, 26, 9, 0, 0, 0, time.UTC), time.Hour)
+	o, err := New("mo-su 07:00-19:00", time.UTC)
+	if err != nil {
+		t.Error(err)
+	}
+	when := o.When(time.Date(2020, 4, 26, 9, 0, 0, 0, time.UTC), time.Hour)
 	want := time.Date(2020, 4, 26, 9, 0, 0, 0, time.UTC)
-	if when == nil || when != nil && !want.Equal(*when) {
+	if when == nil || !want.Equal(*when) {
 		t.Errorf("OpenHours.When() = %v, want %v", when, want)
+	}
+}
+
+func TestOpenHours_InvalidPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Log(string(debug.Stack()))
+			t.Errorf("OpenHours did panic: %v", r)
+		}
+	}()
+	_, err := New("mo 10:00", nil)
+	if err != ErrInvalidFormat {
+		t.Error(err)
 	}
 }
