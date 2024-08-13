@@ -222,6 +222,9 @@ func merge4(o ...time.Time) (bool, []time.Time) {
 
 func merge(o []time.Time) []time.Time {
 	sort.SliceStable(o, func(i, j int) bool {
+		if o[i].Day() == o[j].Day() {
+			return o[i].Hour() < o[j].Hour()
+		}
 		return o[i].Day() < o[j].Day()
 	})
 	for i := 0; i < len(o); i += 2 {

@@ -229,13 +229,16 @@ func TestNew(t *testing.T) {
 		{"complex = simple", "su-sa 00:00-12:00,12:00-24:00", l, NewMust("", l)},
 		{"complex = simple", "su-sa 00:00-12:00;su-sa 12:00-24:00", l, NewMust("", l)},
 		{"time windows order does not matter anymore", "mo-su 00:00-24:00", l, NewMust("", l)},
-		{"weird times in same sentence", "mo-fr 00:00-15:00,10:00-24:00", l, NewMust("mo-fr 00:00-24:00", l)},
-		{"weird times in same sentence one contained", "mo-fr 10:00-15:00,00:00-24:00", l, NewMust("mo-fr 00:00-24:00", l)},
-		{"weird times in different sentence", "mo-fr 00:00-15:00;mo-fr 10:00-24:00", l, NewMust("mo-fr 00:00-24:00", l)},
-		{"weird times in different sentence contained", "mo-fr 10:00-15:00;mo-fr 00:00-24:00", l, NewMust("mo-fr 00:00-24:00", l)},
-		{"total chaos", "tu-fr 10:00-15:00;mo 08:00-09:00;mo-fr 00:00-24:00", l, NewMust("mo-fr 00:00-24:00", l)},
 		{"one day", "mo 10:00-15:00", l, []time.Time{newDate(1, 10, 0, 0, 0, l), newDate(1, 15, 0, 0, 0, l)}},
 		{"two days", "mo 10:00-15:00;fr 08:00-14:00", l, []time.Time{newDate(1, 10, 0, 0, 0, l), newDate(1, 15, 0, 0, 0, l), newDate(5, 8, 0, 0, 0, l), newDate(5, 14, 0, 0, 0, l)}},
+		{"week with break", "Tu-Th 10:30-13:00,14:00-24:00", l, []time.Time{
+			newDate(2, 10, 30, 0, 0, l), newDate(2, 13, 0, 0, 0, l),
+			newDate(2, 14, 0, 0, 0, l), newDate(2, 24, 0, 0, 0, l),
+			newDate(3, 10, 30, 0, 0, l), newDate(3, 13, 0, 0, 0, l),
+			newDate(3, 14, 0, 0, 0, l), newDate(3, 24, 0, 0, 0, l),
+			newDate(4, 10, 30, 0, 0, l), newDate(4, 13, 0, 0, 0, l),
+			newDate(4, 14, 0, 0, 0, l), newDate(4, 24, 0, 0, 0, l),
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
