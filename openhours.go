@@ -33,6 +33,7 @@ func (o OpenHours) Match(t time.Time) bool {
 	return i%2 == 1
 }
 
+// matchIndex returns the index of the next open hour
 func (o OpenHours) matchIndex(t time.Time) int {
 	i := 0
 	for ; i < len(o); i++ {
@@ -46,17 +47,17 @@ func (o OpenHours) matchIndex(t time.Time) int {
 // NextDur returns true if t is in the open hours and the duration until it closes
 // else it returns false if t is in the closed hours and the duration until it opens
 func (o OpenHours) NextDur(t time.Time) (bool, time.Duration) {
-	x := newDateFromTime(t)
-	i := o.matchIndex(x)
-	b := i%2 == 1
-	if i == len(o) {
+	current := newDateFromTime(t)
+	i := o.matchIndex(current)
+	isOpen := i%2 == 1 // uneven -> next time is a closing time
+	if i == len(o) {   // end of week, wrap around
 		i = 0
 	}
-	oi := o[i]
-	if x.After(oi) {
-		oi = oi.AddDate(0, 0, 7)
+	next := o[i]
+	if current.After(next) { // we wrapped, set days to end of week
+		next = next.AddDate(0, 0, 7)
 	}
-	return b, tzDiff(oi, x, t)
+	return isOpen, tzDiff(next, current, t)
 }
 
 // tzDiff calculate diff between a and b and add it to t, taking in account eventual tz changes
@@ -170,6 +171,9 @@ func simplifyTime(str string) (int, int, int) {
 	if len(strs) == 3 {
 		sec, _ = strconv.Atoi(strs[2])
 	}
+	if hour > 24 {
+		hour = hour % 24
+	}
 	if hour > 24 || hour < 0 || min > 59 || min < 0 || sec > 59 || sec < 0 || (hour == 24 && min > 0 || hour == 24 && sec > 0) {
 		return 0, 0, 0
 	}
@@ -201,7 +205,11 @@ func new(str string, loc *time.Location) (OpenHours, error) {
 			hourFrom, minFrom, secFrom := simplifyTime(times[0])
 			hourTo, minTo, secTo := simplifyTime(times[1])
 			for _, day := range days {
-				o = append(o, newDate(day, hourFrom, minFrom, secFrom, 0, loc), newDate(day, hourTo, minTo, secTo, 0, loc))
+				fromDate := newDate(day, hourFrom, minFrom, secFrom, 0, loc)
+				if hourFrom > hourTo { // closing after midnight
+					day++
+				}
+				o = append(o, fromDate, newDate(day, hourTo, minTo, secTo, 0, loc))
 			}
 		}
 	}
