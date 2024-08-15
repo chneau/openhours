@@ -247,7 +247,10 @@ func merge(o []time.Time) []time.Time {
 		if o[i].Day() == o[j].Day() {
 			return o[i].Hour() < o[j].Hour()
 		}
-		return o[i].Day() < o[j].Day()
+		if o[i].Year() == o[j].Year() {
+			return o[i].Day() < o[j].Day()
+		}
+		return o[i].Year() < o[j].Year()
 	})
 	for i := 0; i < len(o); i += 2 {
 		for j := i + 2; j < len(o); j += 2 {
