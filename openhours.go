@@ -2,6 +2,7 @@ package openhours
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -111,6 +112,19 @@ func (o OpenHours) Add(from, to time.Time) OpenHours {
 	o = append(o, newDateFromTime(from), newDateFromTime(to))
 	o = merge(o)
 	return o
+}
+
+var weekdays = map[int]string{0: "Sunday", 1: "Monday", 2: "Tuesday", 3: "Wednesday", 4: "Thursday", 5: "Friday", 6: "Saturday"}
+
+func (o OpenHours) String() []string {
+	str := []string{}
+	if len(o) == 0 {
+		return str
+	}
+	for i := 1; i <= len(o)-1; i += 2 {
+		str = append(str, fmt.Sprintf("%s %s - %s", weekdays[o[i-1].Day()], o[i-1].Format("15:04"), o[i].Format("15:04")))
+	}
+	return str
 }
 
 func cleanStr(str string) string {

@@ -3,6 +3,7 @@ package openhours
 import (
 	"reflect"
 	"runtime/debug"
+	"slices"
 	"testing"
 	"time"
 )
@@ -365,5 +366,24 @@ func TestOpenHours_InvalidPanic(t *testing.T) {
 	_, err := New("mo 10:00", nil)
 	if err != ErrInvalidFormat {
 		t.Error(err)
+	}
+}
+
+func TestOpenHours_String(t *testing.T) {
+	tests := []struct {
+		name string
+		o    OpenHours
+		want []string
+	}{
+		{"empty", OpenHours{}, []string{}},
+		{"simple", NewMust("mo 10:00-15:00", l), []string{"Monday 10:00 - 15:00"}},
+		{"two", NewMust("mo 10:00-15:00;fr 08:00-14:00", l), []string{"Monday 10:00 - 15:00", "Friday 08:00 - 14:00"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.o.String(); !slices.Equal(got, tt.want) {
+				t.Errorf("OpenHours.String() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
