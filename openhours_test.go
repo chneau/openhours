@@ -85,19 +85,20 @@ func Test_simplifyHour(t *testing.T) {
 		{"00:-10", 0, 0, 0},
 		{"24:01", 0, 0, 0},
 		{"-50:99", 0, 0, 0},
-		{"33:33:33", 0, 0, 0},
+		{"33:33:33", 9, 33, 33}, // allow for 25:00:00 to be 1:00:00
+		{"33:61:33", 0, 0, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.args, func(t *testing.T) {
 			got, got1, got2 := simplifyTime(tt.args)
 			if got != tt.want {
-				t.Errorf("simplifyHour() got = %v, want %v", got, tt.want)
+				t.Errorf("simplifyHour(%s) got = %v, want %v", tt.args, got, tt.want)
 			}
 			if got1 != tt.want1 {
-				t.Errorf("simplifyHour() got1 = %v, want %v", got1, tt.want1)
+				t.Errorf("simplifyHour(%s) got1 = %v, want %v", tt.args, got1, tt.want1)
 			}
 			if got2 != tt.want2 {
-				t.Errorf("simplifyHour() got2 = %v, want %v", got2, tt.want2)
+				t.Errorf("simplifyHour(%s) got2 = %v, want %v", tt.args, got2, tt.want2)
 			}
 		})
 	}
@@ -225,8 +226,8 @@ func TestNew(t *testing.T) {
 		{"empty ;", ";", l, []time.Time{newDate(0, 0, 0, 0, 0, l), newDate(7, 0, 0, 0, 0, l)}},
 		{"all day ;", "su-sa 00:00-24:00;", l, []time.Time{newDate(0, 0, 0, 0, 0, l), newDate(7, 0, 0, 0, 0, l)}},
 		{"empty and no tz", "", nil, []time.Time{newDate(0, 0, 0, 0, 0, time.UTC), newDate(7, 0, 0, 0, 0, time.UTC)}},
-		{"order on same sentense", "mo,tu 10:00-11:00", nil, NewMust("tu,mo 10:00-11:00", nil)},
-		{"order on different sentenses", "mo 10:00-11:00;tu 10:00-12:00", nil, NewMust("tu 10:00-12:00;mo 10:00-11:00", nil)},
+		{"order on same sentence", "mo,tu 10:00-11:00", nil, NewMust("tu,mo 10:00-11:00", nil)},
+		{"order on different sentences", "mo 10:00-11:00;tu 10:00-12:00", nil, NewMust("tu 10:00-12:00;mo 10:00-11:00", nil)},
 		{"complex = simple", "su-sa 00:00-12:00,12:00-24:00", l, NewMust("", l)},
 		{"complex = simple", "su-sa 00:00-12:00;su-sa 12:00-24:00", l, NewMust("", l)},
 		{"time windows order does not matter anymore", "mo-su 00:00-24:00", l, NewMust("", l)},
@@ -383,6 +384,36 @@ func TestOpenHours_String(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.o.String(); !slices.Equal(got, tt.want) {
 				t.Errorf("OpenHours.String() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOpenHours_ClosingAfterMidnight(t *testing.T) {
+	o1 := NewMust("mo 22:00-02:00", l)
+	o2 := NewMust("mo 22:00-26:00", l)
+	tests := []struct {
+		o    OpenHours
+		name string
+		now  time.Time
+		want bool
+	}{
+		{o1, "before", time.Date(2019, 3, 4, 21, 0, 0, 0, l), false},
+		{o1, "start", time.Date(2019, 3, 4, 22, 0, 0, 0, l), true},
+		{o1, "between", time.Date(2019, 3, 4, 23, 0, 0, 0, l), true},
+		{o1, "end", time.Date(2019, 3, 5, 2, 0, 0, 0, l), false},
+		{o1, "after", time.Date(2019, 3, 5, 3, 0, 0, 0, l), false},
+		// using the 26:00 = 02:00 next day notation
+		{o2, "before", time.Date(2019, 3, 4, 21, 0, 0, 0, l), false},
+		{o2, "start", time.Date(2019, 3, 4, 22, 0, 0, 0, l), true},
+		{o2, "between", time.Date(2019, 3, 4, 23, 0, 0, 0, l), true},
+		{o2, "end", time.Date(2019, 3, 5, 2, 0, 0, 0, l), false},
+		{o2, "after", time.Date(2019, 3, 5, 3, 0, 0, 0, l), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, got1 := tt.o.NextDur(tt.now); got != tt.want {
+				t.Errorf("OpenHours.NextDur().Open = %v, want %v, duration: %v", got, tt.want, got1)
 			}
 		})
 	}
