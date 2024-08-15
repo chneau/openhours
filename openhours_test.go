@@ -241,6 +241,15 @@ func TestNew(t *testing.T) {
 			newDate(4, 10, 30, 0, 0, l), newDate(4, 13, 0, 0, 0, l),
 			newDate(4, 14, 0, 0, 0, l), newDate(4, 24, 0, 0, 0, l),
 		}},
+		{"", "Mo-Sa 10:00-21:00; Su 12:00-19:00", l, []time.Time{
+			time.Date(2016, 12, 31, 12, 0, 0, 0, l), time.Date(2016, 12, 31, 19, 0, 0, 0, l),
+			newDate(1, 10, 0, 0, 0, l), newDate(1, 21, 0, 0, 0, l),
+			newDate(2, 10, 0, 0, 0, l), newDate(2, 21, 0, 0, 0, l),
+			newDate(3, 10, 0, 0, 0, l), newDate(3, 21, 0, 0, 0, l),
+			newDate(4, 10, 0, 0, 0, l), newDate(4, 21, 0, 0, 0, l),
+			newDate(5, 10, 0, 0, 0, l), newDate(5, 21, 0, 0, 0, l),
+			newDate(6, 10, 0, 0, 0, l), newDate(6, 21, 0, 0, 0, l),
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
