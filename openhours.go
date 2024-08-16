@@ -9,8 +9,18 @@ import (
 	"time"
 )
 
+const (
+	Monday int = iota + 1
+	Tuesday
+	Wednesday
+	Thursday
+	Friday
+	Saturday
+	Sunday
+)
+
 var (
-	weekDays = map[string]int{"su": 0, "mo": 1, "tu": 2, "we": 3, "th": 4, "fr": 5, "sa": 6}
+	weekDays = map[string]int{"mo": Monday, "tu": Tuesday, "we": Wednesday, "th": Thursday, "fr": Friday, "sa": Saturday, "su": Sunday}
 
 	// Errors
 	ErrInvalidFormat error = errors.New("invalid format")
@@ -20,11 +30,11 @@ var (
 type OpenHours []time.Time
 
 func newDate(day, hour, min, sec, nsec int, loc *time.Location) time.Time {
-	return time.Date(2017, 1, day, hour, min, sec, nsec, loc)
+	return time.Date(2018, 1, day, hour, min, sec, nsec, loc)
 }
 
 func newDateFromTime(t time.Time) time.Time {
-	return newDate(int(t.Weekday()), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
+	return newDate(t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
 }
 
 // Match returns true if the time t is in the open hours
@@ -115,15 +125,13 @@ func (o OpenHours) Add(from, to time.Time) OpenHours {
 	return o
 }
 
-var weekdays = map[int]string{0: "Sunday", 1: "Monday", 2: "Tuesday", 3: "Wednesday", 4: "Thursday", 5: "Friday", 6: "Saturday"}
-
 func (o OpenHours) String() []string {
 	str := []string{}
 	if len(o) == 0 {
 		return str
 	}
 	for i := 1; i <= len(o)-1; i += 2 {
-		str = append(str, fmt.Sprintf("%s %s - %s", weekdays[o[i-1].Day()], o[i-1].Format("15:04"), o[i].Format("15:04")))
+		str = append(str, fmt.Sprintf("%s %s - %s", o[i-1].Weekday(), o[i-1].Format("15:04"), o[i].Format("15:04")))
 	}
 	return str
 }
@@ -161,7 +169,12 @@ func simplifyDays(str string) []int {
 				to += 7
 			}
 			for i := from; i <= to; i++ {
-				days[i%7] = struct{}{}
+				switch i % 7 {
+				case 0:
+					days[7] = struct{}{}
+				default:
+					days[i%7] = struct{}{}
+				}
 			}
 			continue
 		}
