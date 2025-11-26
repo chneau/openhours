@@ -243,41 +243,45 @@ func new(str string, loc *time.Location) (OpenHours, error) {
 	return o, nil
 }
 
-func merge4(o ...time.Time) (bool, []time.Time) {
-	for i := 0; i < len(o)-1; i++ {
-		if o[i].After(o[i+1]) || o[i].Equal(o[i+1]) {
-			sort.Slice(o, func(i, j int) bool {
-				return o[i].Before(o[j])
-			})
-			return true, []time.Time{o[0], o[len(o)-1]}
-		}
-	}
-	return false, nil
+type interval struct {
+	start, end time.Time
 }
 
-func merge(o []time.Time) []time.Time {
-	sort.SliceStable(o, func(i, j int) bool {
-		if o[i].Day() == o[j].Day() {
-			return o[i].Hour() < o[j].Hour()
-		}
-		if o[i].Year() == o[j].Year() {
-			return o[i].Day() < o[j].Day()
-		}
-		return o[i].Year() < o[j].Year()
-	})
+func merge(o OpenHours) OpenHours {
+	if len(o) < 4 {
+		return o
+	}
+
+	intervals := make([]interval, 0, len(o)/2)
 	for i := 0; i < len(o); i += 2 {
-		for j := i + 2; j < len(o); j += 2 {
-			perform, res := merge4(o[i], o[i+1], o[j], o[j+1])
-			if !perform {
-				continue
+		intervals = append(intervals, interval{o[i], o[i+1]})
+	}
+
+	sort.Slice(intervals, func(i, j int) bool {
+		return intervals[i].start.Before(intervals[j].start)
+	})
+
+	merged := make(OpenHours, 0, len(o))
+	if len(intervals) == 0 {
+		return merged
+	}
+
+	current := intervals[0]
+
+	for i := 1; i < len(intervals); i++ {
+		next := intervals[i]
+		if next.start.Before(current.end) || next.start.Equal(current.end) {
+			if next.end.After(current.end) {
+				current.end = next.end
 			}
-			o[i], o[i+1] = res[0], res[1]
-			o = append(o[:j], o[j+2:]...)
-			i -= 2
-			break
+		} else {
+			merged = append(merged, current.start, current.end)
+			current = next
 		}
 	}
-	return o
+	merged = append(merged, current.start, current.end)
+
+	return merged
 }
 
 // New returns a new instance of an openhours.

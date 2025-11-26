@@ -321,6 +321,8 @@ func TestOpenHours_When(t *testing.T) {
 		{"after end of open and have time +fri", NewMust("mo 10:00-15:00;fr 08:00-14:00", l), args{newDate(Monday, 16, 0, 0, 0, l), time.Hour * 4}, pDate(5, 8, 0, 0, 0, l)},
 		{"between open and have time +fri", NewMust("mo 10:00-15:00;fr 08:00-14:00", l), args{newDate(Monday, 11, 0, 0, 0, l), time.Hour * 4}, pDate(1, 11, 0, 0, 0, l)},
 		{"between open and no time +fri", NewMust("mo 10:00-15:00;fr 08:00-14:00", l), args{newDate(Monday, 14, 0, 0, 0, l), time.Hour * 4}, pDate(5, 8, 0, 0, 0, l)},
+		{"duration longer than any slot", NewMust("mo 10:00-12:00;tu 10:00-12:00", l), args{newDate(Monday, 11, 0, 0, 0, l), time.Hour * 3}, nil},
+		{"start in closed period", NewMust("mo 10:00-12:00;tu 14:00-16:00", l), args{newDate(Monday, 13, 0, 0, 0, l), time.Hour * 1}, pDate(2, 14, 0, 0, 0, l)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -332,27 +334,42 @@ func TestOpenHours_When(t *testing.T) {
 }
 
 func TestOpenHours_Add(t *testing.T) {
-	type args struct {
-		t time.Time
-		d time.Duration
-	}
 	tests := []struct {
 		name string
 		o    OpenHours
-		args args
-		want *time.Time
+		add  [2]time.Time
+		want OpenHours
 	}{
 		{
-			"at start of open and have time",
-			OpenHours{}.Add(newDate(11, 10, 0, 0, 0, l), newDate(11, 10, 30, 0, 0, l)), // mo 10:00-10:30
-			args{newDate(11, 9, 0, 0, 0, l), time.Second},
-			pDate(11, 10, 0, 0, 0, l),
+			"add to empty",
+			OpenHours{},
+			[2]time.Time{newDate(Monday, 10, 0, 0, 0, l), newDate(Monday, 12, 0, 0, 0, l)},
+			NewMust("mo 10:00-12:00", l),
+		},
+		{
+			"add overlapping",
+			NewMust("mo 10:00-12:00", l),
+			[2]time.Time{newDate(Monday, 11, 0, 0, 0, l), newDate(Monday, 13, 0, 0, 0, l)},
+			NewMust("mo 10:00-13:00", l),
+		},
+		{
+			"add contained",
+			NewMust("mo 10:00-13:00", l),
+			[2]time.Time{newDate(Monday, 11, 0, 0, 0, l), newDate(Monday, 12, 0, 0, 0, l)},
+			NewMust("mo 10:00-13:00", l),
+		},
+		{
+			"add adjacent",
+			NewMust("mo 10:00-12:00", l),
+			[2]time.Time{newDate(Monday, 12, 0, 0, 0, l), newDate(Monday, 13, 0, 0, 0, l)},
+			NewMust("mo 10:00-13:00", l),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.o.When(tt.args.t, tt.args.d); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("OpenHours.When() = %v, want %v", got, tt.want)
+			got := tt.o.Add(tt.add[0], tt.add[1])
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("OpenHours.Add() = %v, want %v", got, tt.want)
 			}
 		})
 	}
