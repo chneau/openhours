@@ -365,6 +365,155 @@ func TestWindows(t *testing.T) {
 	}
 }
 
+func TestAdvancedOSMSyntax(t *testing.T) {
+	tests := []struct {
+		name       string
+		expression string
+		dateTime   time.Time
+		expected   bool
+	}{
+		// Spaced day lists
+		{"Mo, Tu, We on Monday", "Mo, Tu, We 08:00-12:00", time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), true},
+		{"Mo, Tu, We on Tuesday", "Mo, Tu, We 08:00-12:00", time.Date(2026, 5, 19, 10, 0, 0, 0, time.UTC), true},
+		{"Mo, Tu, We on Wednesday", "Mo, Tu, We 08:00-12:00", time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), true},
+		{"Mo, Tu, We on Thursday", "Mo, Tu, We 08:00-12:00", time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC), false},
+
+		// Spaced day range with dash
+		{"Mo - Fr on Monday", "Mo - Fr 08:00-17:00", time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), true},
+		{"Mo - Fr on Saturday", "Mo - Fr 08:00-17:00", time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC), false},
+
+		// Combined range and list: Mo-We, Fr
+		{"Mo-We, Fr on Wednesday", "Mo-We, Fr 08:00-17:00", time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), true},
+		{"Mo-We, Fr on Thursday", "Mo-We, Fr 08:00-17:00", time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC), false},
+		{"Mo-We, Fr on Friday", "Mo-We, Fr 08:00-17:00", time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC), true},
+
+		// 3-letter and full day name aliases
+		{"Mon-Fri on Monday", "Mon-Fri 08:00-17:00", time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), true},
+		{"Monday-Friday on Friday", "Monday-Friday 08:00-17:00", time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC), true},
+		{"Monday-Friday on Saturday", "Monday-Friday 08:00-17:00", time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC), false},
+
+		// 00:00-00:00 all day
+		{"00:00-00:00 on Monday", "Mo 00:00-00:00", time.Date(2026, 5, 18, 15, 30, 0, 0, time.UTC), true},
+		{"00:00-00:00 on Tuesday", "Mo 00:00-00:00", time.Date(2026, 5, 19, 15, 30, 0, 0, time.UTC), false},
+
+		// open keyword
+		{"Mo open on Monday", "Mo open", time.Date(2026, 5, 18, 15, 30, 0, 0, time.UTC), true},
+		{"Mo open on Tuesday", "Mo open", time.Date(2026, 5, 19, 15, 30, 0, 0, time.UTC), false},
+		{"open on Sunday", "open", time.Date(2026, 5, 24, 15, 30, 0, 0, time.UTC), true},
+
+		// off/closed keyword alone
+		{"closed on Monday", "closed", time.Date(2026, 5, 18, 15, 30, 0, 0, time.UTC), false},
+		{"off on Monday", "off", time.Date(2026, 5, 18, 15, 30, 0, 0, time.UTC), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oh := Parse(tt.expression)
+			got := oh.IsOpen(tt.dateTime)
+			if got != tt.expected {
+				t.Errorf("Parse(%q).IsOpen(%v) = %v, want %v", tt.expression, tt.dateTime, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSubMinutePrecision(t *testing.T) {
+	oh := Parse("Mo 08:00-17:00")
+
+	// 1. GetCurrentShiftEnd with seconds
+	tOpen := time.Date(2026, 5, 18, 10, 15, 30, 500, time.UTC)
+	expectedEnd := time.Date(2026, 5, 18, 17, 0, 0, 0, time.UTC)
+	shiftEnd := oh.GetCurrentShiftEnd(tOpen)
+	if shiftEnd == nil || !shiftEnd.Equal(expectedEnd) {
+		t.Errorf("GetCurrentShiftEnd(%v) = %v, want %v", tOpen, shiftEnd, expectedEnd)
+	}
+
+	// 2. NextDur and NextDate when open (30 seconds until close)
+	tNearClose := time.Date(2026, 5, 18, 16, 59, 30, 0, time.UTC)
+	isOpen, dur := oh.NextDur(tNearClose)
+	if !isOpen || dur != 30*time.Second {
+		t.Errorf("NextDur(%v) = (%v, %v), want (true, 30s)", tNearClose, isOpen, dur)
+	}
+	isOpen, nextDate := oh.NextDate(tNearClose)
+	if !isOpen || !nextDate.Equal(expectedEnd) {
+		t.Errorf("NextDate(%v) = (%v, %v), want (true, %v)", tNearClose, isOpen, nextDate, expectedEnd)
+	}
+
+	// 3. NextDur, NextDate, and GetTimeToOpen when closed (30 seconds until open)
+	tNearOpen := time.Date(2026, 5, 18, 7, 59, 30, 0, time.UTC)
+	expectedStart := time.Date(2026, 5, 18, 8, 0, 0, 0, time.UTC)
+	isOpen, dur = oh.NextDur(tNearOpen)
+	if isOpen || dur != 30*time.Second {
+		t.Errorf("NextDur(%v) = (%v, %v), want (false, 30s)", tNearOpen, isOpen, dur)
+	}
+	isOpen, nextDate = oh.NextDate(tNearOpen)
+	if isOpen || !nextDate.Equal(expectedStart) {
+		t.Errorf("NextDate(%v) = (%v, %v), want (false, %v)", tNearOpen, isOpen, nextDate, expectedStart)
+	}
+	timeToOpen := oh.GetTimeToOpen(tNearOpen)
+	if timeToOpen == nil || *timeToOpen != 30*time.Second {
+		t.Errorf("GetTimeToOpen(%v) = %v, want 30s", tNearOpen, timeToOpen)
+	}
+
+	// 4. GetTimeToOpenForDuration and When with sub-minute precision
+	// Only 30 seconds left before close, request 1 minute -> must wait until next week Monday 08:00
+	waitDur := oh.GetTimeToOpenForDuration(tNearClose, 1*time.Minute)
+	expectedWait := (7*24*time.Hour - 16*time.Hour - 59*time.Minute - 30*time.Second) + 8*time.Hour
+	if waitDur == nil || *waitDur != expectedWait {
+		t.Errorf("GetTimeToOpenForDuration(%v, 1m) = %v, want %v", tNearClose, waitDur, expectedWait)
+	}
+	whenDate := oh.When(tNearClose, 1*time.Minute)
+	expectedNextOpen := time.Date(2026, 5, 25, 8, 0, 0, 0, time.UTC)
+	if whenDate == nil || !whenDate.Equal(expectedNextOpen) {
+		t.Errorf("When(%v, 1m) = %v, want %v", tNearClose, whenDate, expectedNextOpen)
+	}
+}
+
+func TestNilSafety(t *testing.T) {
+	var nilOH *OpeningHours
+	now := time.Now()
+
+	if nilOH.Raw() != "" {
+		t.Errorf("expected empty raw for nil")
+	}
+	if nilOH.String() != "" {
+		t.Errorf("expected empty string for nil")
+	}
+	if nilOH.Windows() != nil {
+		t.Errorf("expected nil windows for nil")
+	}
+	if nilOH.IsOpen(now) {
+		t.Errorf("expected false for IsOpen on nil")
+	}
+	if nilOH.Match(now) {
+		t.Errorf("expected false for Match on nil")
+	}
+	if nilOH.GetCurrentShiftEnd(now) != nil {
+		t.Errorf("expected nil for GetCurrentShiftEnd on nil")
+	}
+	if nilOH.GetTimeToOpen(now) != nil {
+		t.Errorf("expected nil for GetTimeToOpen on nil")
+	}
+	if nilOH.GetTimeToOpenForDuration(now, time.Hour) != nil {
+		t.Errorf("expected nil for GetTimeToOpenForDuration on nil")
+	}
+	if nilOH.When(now, time.Hour) != nil {
+		t.Errorf("expected nil for When on nil")
+	}
+	open, dur := nilOH.NextDur(now)
+	if open || dur != 0 {
+		t.Errorf("expected false, 0 for NextDur on nil")
+	}
+	open, nextDate := nilOH.NextDate(now)
+	if open || !nextDate.Equal(now) {
+		t.Errorf("expected false, now for NextDate on nil")
+	}
+	data, err := nilOH.MarshalJSON()
+	if err != nil || string(data) != "null" {
+		t.Errorf("expected null json for nil")
+	}
+}
+
 func timePtr(t time.Time) *time.Time {
 	return &t
 }
