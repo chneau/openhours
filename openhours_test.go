@@ -3,6 +3,7 @@ package openhours
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -513,6 +514,29 @@ func TestNilSafety(t *testing.T) {
 	if err != nil || string(data) != "null" {
 		t.Errorf("expected null json for nil")
 	}
+}
+
+func TestConcurrentEvaluations(t *testing.T) {
+	expr := "Mo-Fr 08:00-12:00, 13:00-17:00; Sa 08:00-12:00"
+	oh := Parse(expr)
+	base := time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC)
+
+	const goroutines = 8
+	const iterations = 10000
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				dt := base.Add(time.Duration((g*1000+i)%10080) * time.Minute)
+				_ = oh.IsOpen(dt)
+				_, _ = oh.TimeToOpen(dt)
+			}
+		}(g)
+	}
+	wg.Wait()
 }
 
 func TestRunCSBenchmarkComparison(t *testing.T) {
