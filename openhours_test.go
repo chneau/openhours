@@ -529,11 +529,11 @@ func durPtr(d time.Duration) *time.Duration {
 func BenchmarkParse_Uncached(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		rules := []openingRule{
+		rules := [...]openingRule{
 			parseOpeningRule("mo-fr 08:00-12:00, 13:00-17:00"),
 			parseOpeningRule("sa 08:00-12:00"),
 		}
-		_ = bakeRules(rules)
+		_ = bakeRules(rules[:])
 	}
 }
 

@@ -2,7 +2,7 @@ package openhours
 
 import (
 	"encoding/json"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -11,8 +11,9 @@ import (
 const minutesPerWeek = 10080
 
 var (
-	internMu   sync.RWMutex
-	internPool = make(map[string]*OpeningHours)
+	internMu     sync.RWMutex
+	internPool   = make(map[string]*OpeningHours)
+	zeroDuration time.Duration
 )
 
 // TimeWindow represents a minute interval [Start, End) within a week (0 to 10080 minutes).
@@ -34,11 +35,11 @@ type OpeningHours struct {
 // Identical expressions are interned to conserve memory.
 func Parse(expression string) *OpeningHours {
 	internMu.RLock()
-	if cached, ok := internPool[expression]; ok {
-		internMu.RUnlock()
+	cached, ok := internPool[expression]
+	internMu.RUnlock()
+	if ok {
 		return cached
 	}
-	internMu.RUnlock()
 
 	trimmed := strings.TrimSpace(expression)
 
@@ -49,14 +50,15 @@ func Parse(expression string) *OpeningHours {
 	}
 
 	var oh *OpeningHours
-	switch trimmed {
-	case "":
+	switch {
+	case trimmed == "":
 		oh = &OpeningHours{expression: expression, windows: nil}
-	case "24/7":
+	case trimmed == "24/7":
 		oh = &OpeningHours{expression: expression, windows: []TimeWindow{{Start: 0, End: minutesPerWeek}}}
 	default:
-		var rules []openingRule
-		// Split by ';' without unnecessary allocations
+		var rulesBuf [8]openingRule
+		rules := rulesBuf[:0]
+
 		remaining := trimmed
 		for len(remaining) > 0 {
 			var part string
@@ -70,7 +72,7 @@ func Parse(expression string) *OpeningHours {
 			part = strings.TrimSpace(part)
 			if part != "" {
 				rule := parseOpeningRule(part)
-				if rule.DayMask > 0 && (rule.IsAllDay || len(rule.TimeRanges) > 0) {
+				if rule.DayMask > 0 && (rule.IsAllDay || rule.hasRanges()) {
 					rules = append(rules, rule)
 				}
 			}
@@ -114,8 +116,10 @@ func (oh *OpeningHours) IsOpen(t time.Time) bool {
 	if oh == nil || len(oh.windows) == 0 {
 		return false
 	}
-	min := getWeekMinute(t)
-	return oh.findWindowIndex(min) != -1
+	hour, min, _ := t.Clock()
+	day := (int(t.Weekday()) + 6) % 7
+	weekMin := day*1440 + hour*60 + min
+	return oh.findWindowIndex(weekMin) != -1
 }
 
 // Match returns true if the time t is within opening hours.
@@ -133,7 +137,7 @@ func (oh *OpeningHours) GetCurrentShiftEnd(t time.Time) *time.Time {
 		return nil
 	}
 
-	min := getWeekMinute(t)
+	min, subMinute := getWeekMinute(t)
 	idx := oh.findWindowIndex(min)
 	if idx == -1 {
 		return nil
@@ -145,7 +149,6 @@ func (oh *OpeningHours) GetCurrentShiftEnd(t time.Time) *time.Time {
 		diffMin = (minutesPerWeek - min) + oh.windows[0].End
 	}
 
-	subMinute := time.Duration(t.Second())*time.Second + time.Duration(t.Nanosecond())*time.Nanosecond
 	res := t.Add(time.Duration(diffMin)*time.Minute - subMinute)
 	return &res
 }
@@ -153,53 +156,69 @@ func (oh *OpeningHours) GetCurrentShiftEnd(t time.Time) *time.Time {
 // GetTimeToOpen returns the duration until the next opening window starting from `from`.
 // If currently open, returns 0. If never opens, returns nil.
 func (oh *OpeningHours) GetTimeToOpen(from time.Time) *time.Duration {
-	if oh == nil || len(oh.windows) == 0 {
+	d, ok := oh.getTimeToOpen(from)
+	if !ok {
 		return nil
 	}
+	if d == 0 {
+		return &zeroDuration
+	}
+	return &d
+}
+
+func (oh *OpeningHours) getTimeToOpen(from time.Time) (time.Duration, bool) {
+	if oh == nil || len(oh.windows) == 0 {
+		return 0, false
+	}
 	if len(oh.windows) == 1 && oh.windows[0].Start == 0 && oh.windows[0].End == minutesPerWeek {
-		zero := time.Duration(0)
-		return &zero
+		return 0, true
 	}
 
-	t := getWeekMinute(from)
+	t, subMinute := getWeekMinute(from)
 	if oh.findWindowIndex(t) != -1 {
-		zero := time.Duration(0)
-		return &zero
+		return 0, true
 	}
 
 	idx := oh.findFirstWindowStartingAtOrAfter(t)
-	subMinute := time.Duration(from.Second())*time.Second + time.Duration(from.Nanosecond())*time.Nanosecond
 
 	if idx < len(oh.windows) {
 		d := time.Duration(oh.windows[idx].Start-t)*time.Minute - subMinute
-		return &d
+		return d, true
 	}
 
 	d := time.Duration((minutesPerWeek-t)+oh.windows[0].Start)*time.Minute - subMinute
-	return &d
+	return d, true
 }
 
 // GetTimeToOpenForDuration returns the wait duration from `from` until an opening window
 // that is at least `duration` long begins (or 0 if currently open and remaining continuous slot >= duration).
 // Returns nil if no single opening window in the schedule is long enough.
 func (oh *OpeningHours) GetTimeToOpenForDuration(from time.Time, duration time.Duration) *time.Duration {
-	if oh == nil || len(oh.windows) == 0 {
+	d, ok := oh.getTimeToOpenForDuration(from, duration)
+	if !ok {
 		return nil
+	}
+	if d == 0 {
+		return &zeroDuration
+	}
+	return &d
+}
+
+func (oh *OpeningHours) getTimeToOpenForDuration(from time.Time, duration time.Duration) (time.Duration, bool) {
+	if oh == nil || len(oh.windows) == 0 {
+		return 0, false
 	}
 	if duration <= 0 {
-		zero := time.Duration(0)
-		return &zero
+		return 0, true
 	}
 	if duration > time.Duration(minutesPerWeek)*time.Minute {
-		return nil
+		return 0, false
 	}
 	if len(oh.windows) == 1 && oh.windows[0].Start == 0 && oh.windows[0].End == minutesPerWeek {
-		zero := time.Duration(0)
-		return &zero
+		return 0, true
 	}
 
-	t := getWeekMinute(from)
-	subMinute := time.Duration(from.Second())*time.Second + time.Duration(from.Nanosecond())*time.Nanosecond
+	t, subMinute := getWeekMinute(from)
 	startIdx := oh.findFirstWindowStartingAtOrAfter(t)
 
 	// Check windows in current week starting from t
@@ -213,14 +232,13 @@ func (oh *OpeningHours) GetTimeToOpenForDuration(from time.Time, duration time.D
 		if t >= w.Start {
 			remDur := time.Duration(effectiveEnd-t)*time.Minute - subMinute
 			if remDur >= duration {
-				zero := time.Duration(0)
-				return &zero
+				return 0, true
 			}
 		} else {
 			winDur := time.Duration(effectiveEnd-w.Start) * time.Minute
 			if winDur >= duration {
 				d := time.Duration(w.Start-t)*time.Minute - subMinute
-				return &d
+				return d, true
 			}
 		}
 	}
@@ -236,21 +254,24 @@ func (oh *OpeningHours) GetTimeToOpenForDuration(from time.Time, duration time.D
 		winDur := time.Duration(effectiveEnd-w.Start) * time.Minute
 		if winDur >= duration {
 			d := time.Duration((minutesPerWeek-t)+w.Start)*time.Minute - subMinute
-			return &d
+			return d, true
 		}
 	}
 
-	return nil
+	return 0, false
 }
 
 // When returns the time `from` + wait duration when `duration` can be continuously serviced during open hours,
 // or nil if it never fits.
 func (oh *OpeningHours) When(from time.Time, duration time.Duration) *time.Time {
-	wait := oh.GetTimeToOpenForDuration(from, duration)
-	if wait == nil {
+	d, ok := oh.getTimeToOpenForDuration(from, duration)
+	if !ok {
 		return nil
 	}
-	res := from.Add(*wait)
+	if d == 0 {
+		return &from
+	}
+	res := from.Add(d)
 	return &res
 }
 
@@ -259,8 +280,7 @@ func (oh *OpeningHours) NextDur(t time.Time) (bool, time.Duration) {
 	if oh == nil || len(oh.windows) == 0 {
 		return false, 0
 	}
-	min := getWeekMinute(t)
-	subMinute := time.Duration(t.Second())*time.Second + time.Duration(t.Nanosecond())*time.Nanosecond
+	min, subMinute := getWeekMinute(t)
 	idx := oh.findWindowIndex(min)
 	if idx != -1 {
 		// Currently open
@@ -350,9 +370,11 @@ func (oh *OpeningHours) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func getWeekMinute(dt time.Time) int {
+func getWeekMinute(dt time.Time) (int, time.Duration) {
+	hour, min, sec := dt.Clock()
 	day := (int(dt.Weekday()) + 6) % 7
-	return day*1440 + dt.Hour()*60 + dt.Minute()
+	subMinute := time.Duration(sec)*time.Second + time.Duration(dt.Nanosecond())*time.Nanosecond
+	return day*1440 + hour*60 + min, subMinute
 }
 
 type timeRange struct {
@@ -362,30 +384,89 @@ type timeRange struct {
 }
 
 type openingRule struct {
-	DayMask    uint8
-	IsOff      bool
-	IsAllDay   bool
-	TimeRanges []timeRange
+	DayMask     uint8
+	IsOff       bool
+	IsAllDay    bool
+	NumRanges   uint8
+	TimeRanges  [4]timeRange
+	ExtraRanges []timeRange
+}
+
+func (r *openingRule) addRange(tr timeRange) {
+	if r.NumRanges < 4 {
+		r.TimeRanges[r.NumRanges] = tr
+		r.NumRanges++
+	} else {
+		r.ExtraRanges = append(r.ExtraRanges, tr)
+	}
+}
+
+func (r *openingRule) hasRanges() bool {
+	return r.NumRanges > 0 || len(r.ExtraRanges) > 0
+}
+
+func hasSuffixFold(s, suffix string) bool {
+	if len(s) < len(suffix) {
+		return false
+	}
+	s = s[len(s)-len(suffix):]
+	for i := 0; i < len(suffix); i++ {
+		c1 := s[i]
+		c2 := suffix[i]
+		if c1 != c2 {
+			if c1 >= 'A' && c1 <= 'Z' {
+				c1 += 'a' - 'A'
+			}
+			if c2 >= 'A' && c2 <= 'Z' {
+				c2 += 'a' - 'A'
+			}
+			if c1 != c2 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func equalFoldASCII(s, target string) bool {
+	if len(s) != len(target) {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c1 := s[i]
+		c2 := target[i]
+		if c1 != c2 {
+			if c1 >= 'A' && c1 <= 'Z' {
+				c1 += 'a' - 'A'
+			}
+			if c2 >= 'A' && c2 <= 'Z' {
+				c2 += 'a' - 'A'
+			}
+			if c1 != c2 {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func parseOpeningRule(ruleString string) openingRule {
 	var rule openingRule
-	lower := strings.ToLower(ruleString)
 
-	if strings.HasSuffix(lower, " off") {
+	if hasSuffixFold(ruleString, " off") {
 		rule.IsOff = true
 		ruleString = strings.TrimSpace(ruleString[:len(ruleString)-4])
-	} else if strings.HasSuffix(lower, " closed") {
+	} else if hasSuffixFold(ruleString, " closed") {
 		rule.IsOff = true
 		ruleString = strings.TrimSpace(ruleString[:len(ruleString)-7])
-	} else if strings.HasSuffix(lower, " open") {
+	} else if hasSuffixFold(ruleString, " open") {
 		ruleString = strings.TrimSpace(ruleString[:len(ruleString)-5])
-	} else if lower == "off" || lower == "closed" {
+	} else if equalFoldASCII(ruleString, "off") || equalFoldASCII(ruleString, "closed") {
 		rule.IsOff = true
 		rule.DayMask = 0x7F
 		rule.IsAllDay = true
 		return rule
-	} else if lower == "open" || lower == "24/7" {
+	} else if equalFoldASCII(ruleString, "open") || ruleString == "24/7" {
 		rule.DayMask = 0x7F
 		rule.IsAllDay = true
 		return rule
@@ -425,7 +506,7 @@ func parseOpeningRule(ruleString string) openingRule {
 	}
 
 	if timePart != "" {
-		rule.TimeRanges = parseTimes(timePart)
+		parseTimesToRule(timePart, &rule)
 		rule.IsAllDay = false
 	} else {
 		rule.IsAllDay = true
@@ -482,29 +563,49 @@ func dayToIndex(s string) int {
 	if len(s) < 2 {
 		return -1
 	}
-	lower := strings.ToLower(s)
-	switch {
-	case lower == "mo" || lower == "mon" || lower == "monday":
-		return 0
-	case lower == "tu" || lower == "tue" || lower == "tues" || lower == "tuesday":
-		return 1
-	case lower == "we" || lower == "wed" || lower == "wednesday":
-		return 2
-	case lower == "th" || lower == "thu" || lower == "thur" || lower == "thurs" || lower == "thursday":
-		return 3
-	case lower == "fr" || lower == "fri" || lower == "friday":
-		return 4
-	case lower == "sa" || lower == "sat" || lower == "saturday":
-		return 5
-	case lower == "su" || lower == "sun" || lower == "sunday":
-		return 6
-	default:
-		return -1
+	c0 := s[0]
+	if c0 >= 'A' && c0 <= 'Z' {
+		c0 += 'a' - 'A'
 	}
+	c1 := s[1]
+	if c1 >= 'A' && c1 <= 'Z' {
+		c1 += 'a' - 'A'
+	}
+
+	switch {
+	case c0 == 'm' && c1 == 'o':
+		if len(s) == 2 || equalFoldASCII(s, "mon") || equalFoldASCII(s, "monday") {
+			return 0
+		}
+	case c0 == 't' && c1 == 'u':
+		if len(s) == 2 || equalFoldASCII(s, "tue") || equalFoldASCII(s, "tues") || equalFoldASCII(s, "tuesday") {
+			return 1
+		}
+	case c0 == 'w' && c1 == 'e':
+		if len(s) == 2 || equalFoldASCII(s, "wed") || equalFoldASCII(s, "wednesday") {
+			return 2
+		}
+	case c0 == 't' && c1 == 'h':
+		if len(s) == 2 || equalFoldASCII(s, "thu") || equalFoldASCII(s, "thur") || equalFoldASCII(s, "thurs") || equalFoldASCII(s, "thursday") {
+			return 3
+		}
+	case c0 == 'f' && c1 == 'r':
+		if len(s) == 2 || equalFoldASCII(s, "fri") || equalFoldASCII(s, "friday") {
+			return 4
+		}
+	case c0 == 's' && c1 == 'a':
+		if len(s) == 2 || equalFoldASCII(s, "sat") || equalFoldASCII(s, "saturday") {
+			return 5
+		}
+	case c0 == 's' && c1 == 'u':
+		if len(s) == 2 || equalFoldASCII(s, "sun") || equalFoldASCII(s, "sunday") {
+			return 6
+		}
+	}
+	return -1
 }
 
-func parseTimes(timePart string) []timeRange {
-	var ranges []timeRange
+func parseTimesToRule(timePart string, rule *openingRule) {
 	remaining := timePart
 	for len(remaining) > 0 {
 		var group string
@@ -520,7 +621,7 @@ func parseTimes(timePart string) []timeRange {
 			continue
 		}
 		if group == "24/7" || group == "00:00-24:00" || group == "00:00-00:00" {
-			ranges = append(ranges, timeRange{StartMin: 0, EndMin: 1440, DayOffset: 0})
+			rule.addRange(timeRange{StartMin: 0, EndMin: 1440, DayOffset: 0})
 		} else if dashIdx := strings.IndexByte(group, '-'); dashIdx >= 0 {
 			part1 := group[:dashIdx]
 			part2 := group[dashIdx+1:]
@@ -528,22 +629,21 @@ func parseTimes(timePart string) []timeRange {
 			e, ok2 := tryParseTimeMin(part2)
 			if ok1 && ok2 {
 				if s == 0 && e == 0 {
-					ranges = append(ranges, timeRange{StartMin: 0, EndMin: 1440, DayOffset: 0})
+					rule.addRange(timeRange{StartMin: 0, EndMin: 1440, DayOffset: 0})
 				} else if s < e {
-					ranges = append(ranges, timeRange{StartMin: int16(s), EndMin: int16(e), DayOffset: 0})
+					rule.addRange(timeRange{StartMin: int16(s), EndMin: int16(e), DayOffset: 0})
 				} else if s > e {
-					ranges = append(ranges, timeRange{StartMin: int16(s), EndMin: 1440, DayOffset: 0})
-					ranges = append(ranges, timeRange{StartMin: 0, EndMin: int16(e), DayOffset: 1})
+					rule.addRange(timeRange{StartMin: int16(s), EndMin: 1440, DayOffset: 0})
+					rule.addRange(timeRange{StartMin: 0, EndMin: int16(e), DayOffset: 1})
 				}
 			}
 		} else if strings.HasSuffix(group, "+") {
 			sOnly, ok := tryParseTimeMin(group[:len(group)-1])
 			if ok {
-				ranges = append(ranges, timeRange{StartMin: int16(sOnly), EndMin: 1440, DayOffset: 0})
+				rule.addRange(timeRange{StartMin: int16(sOnly), EndMin: 1440, DayOffset: 0})
 			}
 		}
 	}
-	return ranges
 }
 
 func tryParseTimeMin(s string) (int, bool) {
@@ -565,26 +665,28 @@ func tryParseTimeMin(s string) (int, bool) {
 
 func parseTwoDigits(s string) (int, bool) {
 	s = strings.TrimSpace(s)
-	if len(s) == 1 {
+	switch len(s) {
+	case 1:
 		if s[0] >= '0' && s[0] <= '9' {
 			return int(s[0] - '0'), true
 		}
-		return 0, false
-	}
-	if len(s) == 2 {
-		if s[0] >= '0' && s[0] <= '9' && s[1] >= '0' && s[1] <= '9' {
-			return int(s[0]-'0')*10 + int(s[1]-'0'), true
+	case 2:
+		c0, c1 := s[0], s[1]
+		if c0 >= '0' && c0 <= '9' && c1 >= '0' && c1 <= '9' {
+			return int(c0-'0')*10 + int(c1-'0'), true
 		}
-		return 0, false
 	}
 	return 0, false
 }
 
 func bakeRules(rules []openingRule) []TimeWindow {
-	var openIntervals []TimeWindow
+	var openBuf [32]TimeWindow
+	openIntervals := openBuf[:0]
+
+	var ruleBuf [16]TimeWindow
 
 	for _, rule := range rules {
-		var ruleWindows []TimeWindow
+		ruleWindows := ruleBuf[:0]
 		for day := 0; day < 7; day++ {
 			if (rule.DayMask & (1 << day)) == 0 {
 				continue
@@ -594,7 +696,20 @@ func bakeRules(rules []openingRule) []TimeWindow {
 				dayOffset := day * 1440
 				ruleWindows = append(ruleWindows, TimeWindow{Start: dayOffset, End: dayOffset + 1440})
 			} else {
-				for _, tr := range rule.TimeRanges {
+				n := int(rule.NumRanges)
+				if n > 4 {
+					n = 4
+				}
+				for k := 0; k < n; k++ {
+					tr := rule.TimeRanges[k]
+					targetDay := (day + int(tr.DayOffset)) % 7
+					dayOffset := targetDay * 1440
+					ruleWindows = append(ruleWindows, TimeWindow{
+						Start: dayOffset + int(tr.StartMin),
+						End:   dayOffset + int(tr.EndMin),
+					})
+				}
+				for _, tr := range rule.ExtraRanges {
 					targetDay := (day + int(tr.DayOffset)) % 7
 					dayOffset := targetDay * 1440
 					ruleWindows = append(ruleWindows, TimeWindow{
@@ -607,50 +722,55 @@ func bakeRules(rules []openingRule) []TimeWindow {
 
 		if !rule.IsOff {
 			openIntervals = append(openIntervals, ruleWindows...)
-			openIntervals = mergeWindows(openIntervals)
+			openIntervals = mergeWindowsInPlace(openIntervals)
 		} else {
-			openIntervals = subtractWindows(openIntervals, ruleWindows)
+			openIntervals = subtractWindowsInPlace(openIntervals, ruleWindows)
 		}
 	}
 
-	sort.Slice(openIntervals, func(i, j int) bool {
-		return openIntervals[i].Start < openIntervals[j].Start
-	})
-	return openIntervals
+	sortWindows(openIntervals)
+	if len(openIntervals) == 0 {
+		return nil
+	}
+	res := make([]TimeWindow, len(openIntervals))
+	copy(res, openIntervals)
+	return res
 }
 
-func mergeWindows(intervals []TimeWindow) []TimeWindow {
+func sortWindows(intervals []TimeWindow) {
+	slices.SortFunc(intervals, func(a, b TimeWindow) int {
+		return a.Start - b.Start
+	})
+}
+
+func mergeWindowsInPlace(intervals []TimeWindow) []TimeWindow {
 	if len(intervals) <= 1 {
 		return intervals
 	}
-	sort.Slice(intervals, func(i, j int) bool {
-		return intervals[i].Start < intervals[j].Start
-	})
+	sortWindows(intervals)
 
-	merged := make([]TimeWindow, 0, len(intervals))
-	merged = append(merged, intervals[0])
+	wIdx := 0
 	for i := 1; i < len(intervals); i++ {
 		curr := intervals[i]
-		lastIdx := len(merged) - 1
-
-		if curr.Start <= merged[lastIdx].End {
-			if curr.End > merged[lastIdx].End {
-				merged[lastIdx].End = curr.End
+		if curr.Start <= intervals[wIdx].End {
+			if curr.End > intervals[wIdx].End {
+				intervals[wIdx].End = curr.End
 			}
 		} else {
-			merged = append(merged, curr)
+			wIdx++
+			intervals[wIdx] = curr
 		}
 	}
-	return merged
+	return intervals[:wIdx+1]
 }
 
-func subtractWindows(source []TimeWindow, subtrahends []TimeWindow) []TimeWindow {
-	result := make([]TimeWindow, len(source))
-	copy(result, source)
+func subtractWindowsInPlace(source []TimeWindow, subtrahends []TimeWindow) []TimeWindow {
+	subs := mergeWindowsInPlace(subtrahends)
 
-	for _, sub := range mergeWindows(subtrahends) {
-		var nextResult []TimeWindow
-		for _, s := range result {
+	var nextBuf [32]TimeWindow
+	for _, sub := range subs {
+		nextResult := nextBuf[:0]
+		for _, s := range source {
 			if sub.Start >= s.End || sub.End <= s.Start {
 				nextResult = append(nextResult, s)
 			} else {
@@ -662,9 +782,9 @@ func subtractWindows(source []TimeWindow, subtrahends []TimeWindow) []TimeWindow
 				}
 			}
 		}
-		result = nextResult
+		source = append(source[:0], nextResult...)
 	}
-	return result
+	return source
 }
 
 
