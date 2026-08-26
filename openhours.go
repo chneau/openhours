@@ -11,10 +11,13 @@ import (
 const minutesPerWeek = 10080
 
 var (
-	internMu       sync.RWMutex
-	internPool     = make(map[string]*OpeningHours)
-	zeroDuration   time.Duration
+	internMu        sync.RWMutex
+	internPool      = make(map[string]*OpeningHours)
+	zeroDuration    time.Duration
 	weekdayToDayIdx = [7]int{6, 0, 1, 2, 3, 4, 5} // Sunday (0) -> 6, Monday (1) -> 0, ...
+
+	emptyOH      = &OpeningHours{expression: "", windows: nil}
+	alwaysOpenOH = &OpeningHours{expression: "24/7", windows: []TimeWindow{{Start: 0, End: minutesPerWeek}}}
 )
 
 // TimeWindow represents a minute interval [Start, End) within a week (0 to 10080 minutes).
@@ -35,6 +38,13 @@ type OpeningHours struct {
 // If the expression is invalid or empty, it returns a safe instance with empty schedule (IsOpen = false).
 // Identical expressions are interned to conserve memory.
 func Parse(expression string) *OpeningHours {
+	if expression == "" {
+		return emptyOH
+	}
+	if expression == "24/7" {
+		return alwaysOpenOH
+	}
+
 	internMu.RLock()
 	cached, ok := internPool[expression]
 	internMu.RUnlock()
@@ -53,9 +63,9 @@ func Parse(expression string) *OpeningHours {
 	var oh *OpeningHours
 	switch {
 	case trimmed == "":
-		oh = &OpeningHours{expression: expression, windows: nil}
+		oh = emptyOH
 	case trimmed == "24/7":
-		oh = &OpeningHours{expression: expression, windows: []TimeWindow{{Start: 0, End: minutesPerWeek}}}
+		oh = alwaysOpenOH
 	default:
 		var rulesBuf [8]openingRule
 		rules := rulesBuf[:0]
@@ -115,9 +125,18 @@ func (oh *OpeningHours) IsOpen(t time.Time) bool {
 	if oh == nil || len(oh.windows) == 0 {
 		return false
 	}
-	hour, min, _ := t.Clock()
-	day := weekdayToDayIdx[t.Weekday()]
-	weekMin := day*1440 + hour*60 + min
+	var weekMin int
+	if t.Location() == time.UTC {
+		unixSec := t.Unix()
+		weekMin = int((unixSec/60 + 4320) % minutesPerWeek)
+		if weekMin < 0 {
+			weekMin += minutesPerWeek
+		}
+	} else {
+		hour, min, _ := t.Clock()
+		day := weekdayToDayIdx[t.Weekday()]
+		weekMin = day*1440 + hour*60 + min
+	}
 	return oh.findWindowIndex(weekMin) != -1
 }
 
@@ -369,6 +388,11 @@ func (oh *OpeningHours) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON deserializes OpeningHours from a JSON string.
 func (oh *OpeningHours) UnmarshalJSON(data []byte) error {
+	n := len(data)
+	if n >= 2 && data[0] == '"' && data[n-1] == '"' && !slices.Contains(data, '\\') {
+		*oh = *Parse(string(data[1 : n-1]))
+		return nil
+	}
 	var expr string
 	if err := json.Unmarshal(data, &expr); err != nil {
 		return err
@@ -379,6 +403,15 @@ func (oh *OpeningHours) UnmarshalJSON(data []byte) error {
 }
 
 func getWeekMinute(dt time.Time) (int, time.Duration) {
+	if dt.Location() == time.UTC {
+		unixSec := dt.Unix()
+		weekMin := int((unixSec/60 + 4320) % minutesPerWeek)
+		if weekMin < 0 {
+			weekMin += minutesPerWeek
+		}
+		subMinute := time.Duration(unixSec%60)*time.Second + time.Duration(dt.Nanosecond())*time.Nanosecond
+		return weekMin, subMinute
+	}
 	hour, min, sec := dt.Clock()
 	day := weekdayToDayIdx[dt.Weekday()]
 	subMinute := time.Duration(sec)*time.Second + time.Duration(dt.Nanosecond())*time.Nanosecond
