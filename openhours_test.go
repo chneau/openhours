@@ -543,29 +543,29 @@ func TestRunCSBenchmarkComparison(t *testing.T) {
 	dur2 := time.Since(t0)
 	fmt.Printf("2. IsOpen (1M pure calls):                 %4d ms (%.3f us/op)\n", dur2.Milliseconds(), float64(dur2.Nanoseconds())/1_000_000.0/1000.0)
 
-	// 3. Benchmark GetTimeToOpen (10k calls)
+	// 3. Benchmark GetTimeToOpen / TimeToOpen (10k calls)
 	t0 = time.Now()
 	for i := 0; i < iterations; i++ {
-		_ = oh.GetTimeToOpen(start.Add(time.Duration(i%168) * time.Hour))
+		_, _ = oh.TimeToOpen(start.Add(time.Duration(i%168) * time.Hour))
 	}
 	dur3 := time.Since(t0)
-	fmt.Printf("3. GetTimeToOpen (10k calls):              %4d ms (%.3f us/op)\n", dur3.Milliseconds(), float64(dur3.Nanoseconds())/float64(iterations)/1000.0)
+	fmt.Printf("3. TimeToOpen (10k zero-alloc calls):      %4d ms (%.3f us/op)\n", dur3.Milliseconds(), float64(dur3.Nanoseconds())/float64(iterations)/1000.0)
 
-	// 4. Benchmark GetTimeToOpenForDuration 4h (10k calls)
+	// 4. Benchmark GetTimeToOpenForDuration / TimeToOpenForDuration 4h (10k calls)
 	t0 = time.Now()
 	for i := 0; i < iterations; i++ {
-		_ = oh.GetTimeToOpenForDuration(start.Add(time.Duration(i%168)*time.Hour), fourHours)
+		_, _ = oh.TimeToOpenForDuration(start.Add(time.Duration(i%168)*time.Hour), fourHours)
 	}
 	dur4 := time.Since(t0)
-	fmt.Printf("4. GetTimeToOpenForDuration 4h (10k calls):%4d ms (%.3f us/op)\n", dur4.Milliseconds(), float64(dur4.Nanoseconds())/float64(iterations)/1000.0)
+	fmt.Printf("4. TimeToOpenForDuration 4h (10k calls):   %4d ms (%.3f us/op)\n", dur4.Milliseconds(), float64(dur4.Nanoseconds())/float64(iterations)/1000.0)
 
-	// 5. Benchmark When 4h (10k calls)
+	// 5. Benchmark When / WhenTime 4h (10k calls)
 	t0 = time.Now()
 	for i := 0; i < iterations; i++ {
-		_ = oh.When(start.Add(time.Duration(i%168)*time.Hour), fourHours)
+		_, _ = oh.WhenTime(start.Add(time.Duration(i%168)*time.Hour), fourHours)
 	}
 	dur5 := time.Since(t0)
-	fmt.Printf("5. When 4h (10k calls):                    %4d ms (%.3f us/op)\n", dur5.Milliseconds(), float64(dur5.Nanoseconds())/float64(iterations)/1000.0)
+	fmt.Printf("5. WhenTime 4h (10k calls):                %4d ms (%.3f us/op)\n", dur5.Milliseconds(), float64(dur5.Nanoseconds())/float64(iterations)/1000.0)
 
 	// 6. Benchmark NextDur (10k calls)
 	t0 = time.Now()
@@ -660,6 +660,26 @@ func BenchmarkIsOpen(b *testing.B) {
 	}
 }
 
+func BenchmarkGetTimeToOpen(b *testing.B) {
+	oh := Parse("mo-fr 08:00-12:00, 13:00-17:00; sa 08:00-12:00")
+	t := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = oh.GetTimeToOpen(t)
+	}
+}
+
+func BenchmarkTimeToOpen(b *testing.B) {
+	oh := Parse("mo-fr 08:00-12:00, 13:00-17:00; sa 08:00-12:00")
+	t := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = oh.TimeToOpen(t)
+	}
+}
+
 func BenchmarkWhen(b *testing.B) {
 	oh := Parse("mo-fr 08:00-12:00, 13:00-17:00; sa 08:00-12:00")
 	t := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)
@@ -690,6 +710,17 @@ func BenchmarkGetTimeToOpenForDuration(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = oh.GetTimeToOpenForDuration(t, dur)
+	}
+}
+
+func BenchmarkTimeToOpenForDuration(b *testing.B) {
+	oh := Parse("mo-fr 08:00-12:00, 13:00-17:00; sa 08:00-12:00")
+	t := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)
+	dur := 3 * time.Hour
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = oh.TimeToOpenForDuration(t, dur)
 	}
 }
 

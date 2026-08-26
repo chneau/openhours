@@ -230,6 +230,13 @@ func (oh *OpeningHours) GetTimeToOpen(from time.Time) *time.Duration {
 	return &d
 }
 
+// TimeToOpen returns the duration until the next opening window starting from `from`,
+// and a boolean indicating whether the location ever opens. If currently open, duration is 0.
+// This is a zero-allocation value method.
+func (oh *OpeningHours) TimeToOpen(from time.Time) (time.Duration, bool) {
+	return oh.getTimeToOpen(from)
+}
+
 func (oh *OpeningHours) getTimeToOpen(from time.Time) (time.Duration, bool) {
 	if oh == nil || len(oh.windows) == 0 {
 		return 0, false
@@ -266,6 +273,13 @@ func (oh *OpeningHours) GetTimeToOpenForDuration(from time.Time, duration time.D
 		return &zeroDuration
 	}
 	return &d
+}
+
+// TimeToOpenForDuration returns the wait duration from `from` until an opening window
+// of at least `duration` begins, and a boolean indicating if such a window exists.
+// This is a zero-allocation value method.
+func (oh *OpeningHours) TimeToOpenForDuration(from time.Time, duration time.Duration) (time.Duration, bool) {
+	return oh.getTimeToOpenForDuration(from, duration)
 }
 
 func (oh *OpeningHours) getTimeToOpenForDuration(from time.Time, duration time.Duration) (time.Duration, bool) {
@@ -486,12 +500,16 @@ func getWeekMinute(dt time.Time) (int, time.Duration) {
 		if weekMin < 0 {
 			weekMin += minutesPerWeek
 		}
-		subMinute := time.Duration(unixSec%60)*time.Second + time.Duration(dt.Nanosecond())*time.Nanosecond
+		subMinute := time.Duration(unixSec%60)*time.Second + time.Duration(dt.Nanosecond())
 		return weekMin, subMinute
 	}
+	return getWeekMinuteNonUTC(dt)
+}
+
+func getWeekMinuteNonUTC(dt time.Time) (int, time.Duration) {
 	hour, min, sec := dt.Clock()
 	day := weekdayToDayIdx[dt.Weekday()]
-	subMinute := time.Duration(sec)*time.Second + time.Duration(dt.Nanosecond())*time.Nanosecond
+	subMinute := time.Duration(sec)*time.Second + time.Duration(dt.Nanosecond())
 	return day*1440 + hour*60 + min, subMinute
 }
 
