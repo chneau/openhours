@@ -49,11 +49,12 @@ func Parse(expression string) *OpeningHours {
 	}
 
 	var oh *OpeningHours
-	if trimmed == "" {
+	switch trimmed {
+	case "":
 		oh = &OpeningHours{expression: expression, windows: nil}
-	} else if trimmed == "24/7" {
+	case "24/7":
 		oh = &OpeningHours{expression: expression, windows: []TimeWindow{{Start: 0, End: minutesPerWeek}}}
-	} else {
+	default:
 		var rules []openingRule
 		// Split by ';' without unnecessary allocations
 		remaining := expression
