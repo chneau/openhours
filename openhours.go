@@ -11,9 +11,10 @@ import (
 const minutesPerWeek = 10080
 
 var (
-	internMu     sync.RWMutex
-	internPool   = make(map[string]*OpeningHours)
-	zeroDuration time.Duration
+	internMu       sync.RWMutex
+	internPool     = make(map[string]*OpeningHours)
+	zeroDuration   time.Duration
+	weekdayToDayIdx = [7]int{6, 0, 1, 2, 3, 4, 5} // Sunday (0) -> 6, Monday (1) -> 0, ...
 )
 
 // TimeWindow represents a minute interval [Start, End) within a week (0 to 10080 minutes).
@@ -106,9 +107,7 @@ func (oh *OpeningHours) Windows() []TimeWindow {
 	if oh == nil || len(oh.windows) == 0 {
 		return nil
 	}
-	res := make([]TimeWindow, len(oh.windows))
-	copy(res, oh.windows)
-	return res
+	return slices.Clone(oh.windows)
 }
 
 // IsOpen returns true if the specified time is within opening hours.
@@ -117,7 +116,7 @@ func (oh *OpeningHours) IsOpen(t time.Time) bool {
 		return false
 	}
 	hour, min, _ := t.Clock()
-	day := (int(t.Weekday()) + 6) % 7
+	day := weekdayToDayIdx[t.Weekday()]
 	weekMin := day*1440 + hour*60 + min
 	return oh.findWindowIndex(weekMin) != -1
 }
@@ -317,16 +316,20 @@ func (oh *OpeningHours) NextDate(t time.Time) (bool, time.Time) {
 
 func (oh *OpeningHours) findWindowIndex(t int) int {
 	windows := oh.windows
+	n := len(windows)
+	if n == 0 {
+		return -1
+	}
+	_ = windows[n-1] // BCE
 	low := 0
-	high := len(windows) - 1
+	high := n - 1
 	for low <= high {
 		mid := int(uint(low+high) >> 1)
 		w := &windows[mid]
-		if t >= w.Start && t < w.End {
-			return mid
-		}
 		if t < w.Start {
 			high = mid - 1
+		} else if t < w.End {
+			return mid
 		} else {
 			low = mid + 1
 		}
@@ -336,9 +339,14 @@ func (oh *OpeningHours) findWindowIndex(t int) int {
 
 func (oh *OpeningHours) findFirstWindowStartingAtOrAfter(t int) int {
 	windows := oh.windows
+	n := len(windows)
+	if n == 0 {
+		return 0
+	}
+	_ = windows[n-1] // BCE
 	low := 0
-	high := len(windows) - 1
-	result := len(windows)
+	high := n - 1
+	result := n
 	for low <= high {
 		mid := int(uint(low+high) >> 1)
 		if windows[mid].End > t {
@@ -372,7 +380,7 @@ func (oh *OpeningHours) UnmarshalJSON(data []byte) error {
 
 func getWeekMinute(dt time.Time) (int, time.Duration) {
 	hour, min, sec := dt.Clock()
-	day := (int(dt.Weekday()) + 6) % 7
+	day := weekdayToDayIdx[dt.Weekday()]
 	subMinute := time.Duration(sec)*time.Second + time.Duration(dt.Nanosecond())*time.Nanosecond
 	return day*1440 + hour*60 + min, subMinute
 }
@@ -563,14 +571,8 @@ func dayToIndex(s string) int {
 	if len(s) < 2 {
 		return -1
 	}
-	c0 := s[0]
-	if c0 >= 'A' && c0 <= 'Z' {
-		c0 += 'a' - 'A'
-	}
-	c1 := s[1]
-	if c1 >= 'A' && c1 <= 'Z' {
-		c1 += 'a' - 'A'
-	}
+	c0 := s[0] | 0x20
+	c1 := s[1] | 0x20
 
 	switch {
 	case c0 == 'm' && c1 == 'o':
@@ -651,6 +653,31 @@ func tryParseTimeMin(s string) (int, bool) {
 	if s == "24:00" {
 		return 1440, true
 	}
+	n := len(s)
+	// Fast path for standard "HH:MM" (5 bytes)
+	if n == 5 && s[2] == ':' {
+		h0, h1, m0, m1 := s[0]-'0', s[1]-'0', s[3]-'0', s[4]-'0'
+		if h0 < 10 && h1 < 10 && m0 < 10 && m1 < 10 {
+			h := int(h0*10 + h1)
+			m := int(m0*10 + m1)
+			if h < 24 && m < 60 {
+				return h*60 + m, true
+			}
+		}
+		return 0, false
+	}
+	// Fast path for standard "H:MM" (4 bytes)
+	if n == 4 && s[1] == ':' {
+		h0, m0, m1 := s[0]-'0', s[2]-'0', s[3]-'0'
+		if h0 < 10 && m0 < 10 && m1 < 10 {
+			m := int(m0*10 + m1)
+			if m < 60 {
+				return int(h0)*60 + m, true
+			}
+		}
+		return 0, false
+	}
+
 	colonIdx := strings.IndexByte(s, ':')
 	if colonIdx < 1 || colonIdx >= len(s)-1 {
 		return 0, false
