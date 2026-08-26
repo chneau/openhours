@@ -550,12 +550,15 @@ func TestRunCSBenchmarkComparison(t *testing.T) {
 	fixedTime := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
 	iterations := 10000
 	fourHours := 4 * time.Hour
+	// Multiply iteration counts by this factor so benchmarks run longer and
+	// yield more stable per-op timings across all workloads.
+	const benchScale = 10
 
 	// 1. Benchmark IsOpen (Rolling 100k calls). The timeline of successive
 	// timestamps is built once up-front so that the per-iteration time.Add cost is
 	// not part of the measured region — the timing reflects IsOpen itself over a
 	// rolling set of inputs rather than Go's (comparatively expensive) time.Add.
-	rollingCount := iterations * 10
+	rollingCount := iterations * 10 * benchScale
 	timeline := make([]time.Time, rollingCount)
 	for i := 0; i < rollingCount; i++ {
 		timeline[i] = start.Add(time.Duration(i) * time.Minute)
@@ -569,73 +572,74 @@ func TestRunCSBenchmarkComparison(t *testing.T) {
 
 	// 2. Benchmark IsOpen (Pure 1M calls with fixed timestamp)
 	t0 = time.Now()
-	for i := 0; i < 1_000_000; i++ {
+	for i := 0; i < 1_000_000*benchScale; i++ {
 		_ = oh.IsOpen(fixedTime)
 	}
 	dur2 := time.Since(t0)
-	fmt.Printf("2. IsOpen (1M pure calls):                 %4d ms (%.3f us/op)\n", dur2.Milliseconds(), float64(dur2.Nanoseconds())/1_000_000.0/1000.0)
+	fmt.Printf("2. IsOpen (1M pure calls):                 %4d ms (%.3f us/op)\n", dur2.Milliseconds(), float64(dur2.Nanoseconds())/float64(1_000_000*benchScale)/1000.0)
 
 	// 3. Benchmark GetTimeToOpen / TimeToOpen (10k calls)
 	t0 = time.Now()
-	for i := 0; i < iterations; i++ {
+	for i := 0; i < iterations*benchScale; i++ {
 		_, _ = oh.TimeToOpen(start.Add(time.Duration(i%168) * time.Hour))
 	}
 	dur3 := time.Since(t0)
-	fmt.Printf("3. TimeToOpen (10k zero-alloc calls):      %4d ms (%.3f us/op)\n", dur3.Milliseconds(), float64(dur3.Nanoseconds())/float64(iterations)/1000.0)
+	fmt.Printf("3. TimeToOpen (%dk zero-alloc calls):      %4d ms (%.3f us/op)\n", iterations*benchScale/1000, dur3.Milliseconds(), float64(dur3.Nanoseconds())/float64(iterations*benchScale)/1000.0)
 
 	// 4. Benchmark GetTimeToOpenForDuration / TimeToOpenForDuration 4h (10k calls)
 	t0 = time.Now()
-	for i := 0; i < iterations; i++ {
+	for i := 0; i < iterations*benchScale; i++ {
 		_, _ = oh.TimeToOpenForDuration(start.Add(time.Duration(i%168)*time.Hour), fourHours)
 	}
 	dur4 := time.Since(t0)
-	fmt.Printf("4. TimeToOpenForDuration 4h (10k calls):   %4d ms (%.3f us/op)\n", dur4.Milliseconds(), float64(dur4.Nanoseconds())/float64(iterations)/1000.0)
+	fmt.Printf("4. TimeToOpenForDuration 4h (%dk calls):   %4d ms (%.3f us/op)\n", iterations*benchScale/1000, dur4.Milliseconds(), float64(dur4.Nanoseconds())/float64(iterations*benchScale)/1000.0)
 
 	// 5. Benchmark When / WhenTime 4h (10k calls)
 	t0 = time.Now()
-	for i := 0; i < iterations; i++ {
+	for i := 0; i < iterations*benchScale; i++ {
 		_, _ = oh.WhenTime(start.Add(time.Duration(i%168)*time.Hour), fourHours)
 	}
 	dur5 := time.Since(t0)
-	fmt.Printf("5. WhenTime 4h (10k calls):                %4d ms (%.3f us/op)\n", dur5.Milliseconds(), float64(dur5.Nanoseconds())/float64(iterations)/1000.0)
+	fmt.Printf("5. WhenTime 4h (%dk calls):                %4d ms (%.3f us/op)\n", iterations*benchScale/1000, dur5.Milliseconds(), float64(dur5.Nanoseconds())/float64(iterations*benchScale)/1000.0)
 
 	// 6. Benchmark NextDur (10k calls)
 	t0 = time.Now()
-	for i := 0; i < iterations; i++ {
+	for i := 0; i < iterations*benchScale; i++ {
 		_, _ = oh.NextDur(start.Add(time.Duration(i%168) * time.Hour))
 	}
 	dur6 := time.Since(t0)
-	fmt.Printf("6. NextDur (10k calls):                    %4d ms (%.3f us/op)\n", dur6.Milliseconds(), float64(dur6.Nanoseconds())/float64(iterations)/1000.0)
+	fmt.Printf("6. NextDur (%dk calls):                    %4d ms (%.3f us/op)\n", iterations*benchScale/1000, dur6.Milliseconds(), float64(dur6.Nanoseconds())/float64(iterations*benchScale)/1000.0)
 
 	// 7. Benchmark NextDate (10k calls)
 	t0 = time.Now()
-	for i := 0; i < iterations; i++ {
+	for i := 0; i < iterations*benchScale; i++ {
 		_, _ = oh.NextDate(start.Add(time.Duration(i%168) * time.Hour))
 	}
 	dur7 := time.Since(t0)
-	fmt.Printf("7. NextDate (10k calls):                   %4d ms (%.3f us/op)\n", dur7.Milliseconds(), float64(dur7.Nanoseconds())/float64(iterations)/1000.0)
+	fmt.Printf("7. NextDate (%dk calls):                   %4d ms (%.3f us/op)\n", iterations*benchScale/1000, dur7.Milliseconds(), float64(dur7.Nanoseconds())/float64(iterations*benchScale)/1000.0)
 
 	// 8. Benchmark Parse (Cached 1k calls)
 	t0 = time.Now()
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 1000*benchScale; i++ {
 		_ = Parse(complexExpr)
 	}
 	dur8 := time.Since(t0)
-	fmt.Printf("8. Parse Cached (1k calls):                %4d ms (%.3f us/op)\n", dur8.Milliseconds(), float64(dur8.Nanoseconds())/1000.0/1000.0)
+	fmt.Printf("8. Parse Cached (%dk calls):               %4d ms (%.3f us/op)\n", benchScale, dur8.Milliseconds(), float64(dur8.Nanoseconds())/float64(1000*benchScale)/1000.0)
 
 	// 9. Benchmark JSON Deserialization (1k calls)
 	jsonData := []byte(`"` + complexExpr + `"`)
 	t0 = time.Now()
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 1000*benchScale; i++ {
 		_, _ = DecodeJSON(jsonData)
 	}
 	dur9 := time.Since(t0)
-	fmt.Printf("9. JSON Deserialize (1k calls):            %4d ms (%.3f us/op)\n", dur9.Milliseconds(), float64(dur9.Nanoseconds())/1000.0/1000.0)
+	fmt.Printf("9. JSON Deserialize (%dk calls):           %4d ms (%.3f us/op)\n", benchScale, dur9.Milliseconds(), float64(dur9.Nanoseconds())/float64(1000*benchScale)/1000.0)
 
-	// 10. Simulation Stress Test (5,000 unique locations)
+	// 10. Simulation Stress Test (50,000 unique locations)
+	stressCount := 5000 * benchScale
 	t0 = time.Now()
-	locations := make([]*OpeningHours, 0, 5000)
-	for i := 0; i < 5000; i++ {
+	locations := make([]*OpeningHours, 0, stressCount)
+	for i := 0; i < stressCount; i++ {
 		hStart := 8 + (i%60)/60
 		mStart := (i % 60)
 		hEnd := 17 + (i%60)/60
@@ -644,7 +648,7 @@ func TestRunCSBenchmarkComparison(t *testing.T) {
 		locations = append(locations, Parse(expr))
 	}
 	dur10 := time.Since(t0)
-	fmt.Printf("10. Stress Test (5,000 unique objects):    %4d ms (%.4f ms/obj)\n", dur10.Milliseconds(), float64(dur10.Nanoseconds())/5000.0/1000000.0)
+	fmt.Printf("10. Stress Test (%d unique objects):      %4d ms (%.4f ms/obj)\n", stressCount, dur10.Milliseconds(), float64(dur10.Nanoseconds())/float64(stressCount)/1000000.0)
 	fmt.Println("========================================================")
 }
 
