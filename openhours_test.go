@@ -671,6 +671,17 @@ func BenchmarkWhen(b *testing.B) {
 	}
 }
 
+func BenchmarkWhenTime(b *testing.B) {
+	oh := Parse("mo-fr 08:00-12:00, 13:00-17:00; sa 08:00-12:00")
+	t := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)
+	dur := 3 * time.Hour
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = oh.WhenTime(t, dur)
+	}
+}
+
 func BenchmarkGetTimeToOpenForDuration(b *testing.B) {
 	oh := Parse("mo-fr 08:00-12:00, 13:00-17:00; sa 08:00-12:00")
 	t := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)

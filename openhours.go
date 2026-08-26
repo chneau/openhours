@@ -282,15 +282,24 @@ func (oh *OpeningHours) getTimeToOpenForDuration(from time.Time, duration time.D
 // When returns the time `from` + wait duration when `duration` can be continuously serviced during open hours,
 // or nil if it never fits.
 func (oh *OpeningHours) When(from time.Time, duration time.Duration) *time.Time {
-	d, ok := oh.getTimeToOpenForDuration(from, duration)
+	t, ok := oh.WhenTime(from, duration)
 	if !ok {
 		return nil
 	}
-	if d == 0 {
-		return &from
+	return &t
+}
+
+// WhenTime returns the time `from` + wait duration when `duration` can be continuously serviced during open hours,
+// and a boolean indicating success. It does not allocate memory on the heap.
+func (oh *OpeningHours) WhenTime(from time.Time, duration time.Duration) (time.Time, bool) {
+	d, ok := oh.getTimeToOpenForDuration(from, duration)
+	if !ok {
+		return time.Time{}, false
 	}
-	res := from.Add(d)
-	return &res
+	if d == 0 {
+		return from, true
+	}
+	return from.Add(d), true
 }
 
 // NextDur returns whether currently open, and the duration until state changes (shift ends or opens).
@@ -496,12 +505,12 @@ func parseOpeningRule(ruleString string) openingRule {
 
 	if hasSuffixFold(ruleString, " off") {
 		rule.IsOff = true
-		ruleString = strings.TrimSpace(ruleString[:len(ruleString)-4])
+		ruleString = trimSpaceFast(ruleString[:len(ruleString)-4])
 	} else if hasSuffixFold(ruleString, " closed") {
 		rule.IsOff = true
-		ruleString = strings.TrimSpace(ruleString[:len(ruleString)-7])
+		ruleString = trimSpaceFast(ruleString[:len(ruleString)-7])
 	} else if hasSuffixFold(ruleString, " open") {
-		ruleString = strings.TrimSpace(ruleString[:len(ruleString)-5])
+		ruleString = trimSpaceFast(ruleString[:len(ruleString)-5])
 	} else if equalFoldASCII(ruleString, "off") || equalFoldASCII(ruleString, "closed") {
 		rule.IsOff = true
 		rule.DayMask = 0x7F
@@ -513,7 +522,7 @@ func parseOpeningRule(ruleString string) openingRule {
 		return rule
 	}
 
-	ruleString = strings.TrimSpace(ruleString)
+	ruleString = trimSpaceFast(ruleString)
 	if ruleString == "" {
 		return rule
 	}
@@ -529,8 +538,8 @@ func parseOpeningRule(ruleString string) openingRule {
 
 	var dayPart, timePart string
 	if digitIdx >= 0 {
-		dayPart = strings.TrimSpace(ruleString[:digitIdx])
-		timePart = strings.TrimSpace(ruleString[digitIdx:])
+		dayPart = trimSpaceFast(ruleString[:digitIdx])
+		timePart = trimSpaceFast(ruleString[digitIdx:])
 	} else {
 		dayPart = ruleString
 		timePart = ""
@@ -568,13 +577,13 @@ func parseDayMask(dayPart string) int {
 			group = remaining
 			remaining = ""
 		}
-		group = strings.TrimSpace(group)
+		group = trimSpaceFast(group)
 		if group == "" {
 			continue
 		}
 		if dashIdx := strings.IndexByte(group, '-'); dashIdx >= 0 {
-			rangePart1 := strings.TrimSpace(group[:dashIdx])
-			rangePart2 := strings.TrimSpace(group[dashIdx+1:])
+			rangePart1 := trimSpaceFast(group[:dashIdx])
+			rangePart2 := trimSpaceFast(group[dashIdx+1:])
 			start := dayToIndex(rangePart1)
 			end := dayToIndex(rangePart2)
 			if start != -1 && end != -1 {
@@ -599,40 +608,51 @@ func parseDayMask(dayPart string) int {
 	return mask
 }
 
+func trimSpaceFast(s string) string {
+	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
+		s = s[1:]
+	}
+	for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
 func dayToIndex(s string) int {
-	s = strings.TrimSpace(s)
+	s = trimSpaceFast(s)
 	if len(s) < 2 {
 		return -1
 	}
 	c0 := s[0] | 0x20
 	c1 := s[1] | 0x20
+	pair := (uint16(c0) << 8) | uint16(c1)
 
-	switch {
-	case c0 == 'm' && c1 == 'o':
+	switch pair {
+	case ('m' << 8) | 'o':
 		if len(s) == 2 || equalFoldASCII(s, "mon") || equalFoldASCII(s, "monday") {
 			return 0
 		}
-	case c0 == 't' && c1 == 'u':
+	case ('t' << 8) | 'u':
 		if len(s) == 2 || equalFoldASCII(s, "tue") || equalFoldASCII(s, "tues") || equalFoldASCII(s, "tuesday") {
 			return 1
 		}
-	case c0 == 'w' && c1 == 'e':
+	case ('w' << 8) | 'e':
 		if len(s) == 2 || equalFoldASCII(s, "wed") || equalFoldASCII(s, "wednesday") {
 			return 2
 		}
-	case c0 == 't' && c1 == 'h':
+	case ('t' << 8) | 'h':
 		if len(s) == 2 || equalFoldASCII(s, "thu") || equalFoldASCII(s, "thur") || equalFoldASCII(s, "thurs") || equalFoldASCII(s, "thursday") {
 			return 3
 		}
-	case c0 == 'f' && c1 == 'r':
+	case ('f' << 8) | 'r':
 		if len(s) == 2 || equalFoldASCII(s, "fri") || equalFoldASCII(s, "friday") {
 			return 4
 		}
-	case c0 == 's' && c1 == 'a':
+	case ('s' << 8) | 'a':
 		if len(s) == 2 || equalFoldASCII(s, "sat") || equalFoldASCII(s, "saturday") {
 			return 5
 		}
-	case c0 == 's' && c1 == 'u':
+	case ('s' << 8) | 'u':
 		if len(s) == 2 || equalFoldASCII(s, "sun") || equalFoldASCII(s, "sunday") {
 			return 6
 		}
@@ -651,7 +671,7 @@ func parseTimesToRule(timePart string, rule *openingRule) {
 			group = remaining
 			remaining = ""
 		}
-		group = strings.TrimSpace(group)
+		group = trimSpaceFast(group)
 		if group == "" {
 			continue
 		}
@@ -682,7 +702,7 @@ func parseTimesToRule(timePart string, rule *openingRule) {
 }
 
 func tryParseTimeMin(s string) (int, bool) {
-	s = strings.TrimSpace(s)
+	s = trimSpaceFast(s)
 	if s == "24:00" {
 		return 1440, true
 	}
@@ -724,7 +744,7 @@ func tryParseTimeMin(s string) (int, bool) {
 }
 
 func parseTwoDigits(s string) (int, bool) {
-	s = strings.TrimSpace(s)
+	s = trimSpaceFast(s)
 	switch len(s) {
 	case 1:
 		if s[0] >= '0' && s[0] <= '9' {
@@ -798,9 +818,11 @@ func bakeRules(rules []openingRule) []TimeWindow {
 }
 
 func sortWindows(intervals []TimeWindow) {
-	slices.SortFunc(intervals, func(a, b TimeWindow) int {
-		return a.Start - b.Start
-	})
+	for i := 1; i < len(intervals); i++ {
+		for j := i; j > 0 && intervals[j].Start < intervals[j-1].Start; j-- {
+			intervals[j], intervals[j-1] = intervals[j-1], intervals[j]
+		}
+	}
 }
 
 func mergeWindowsInPlace(intervals []TimeWindow) []TimeWindow {
@@ -829,20 +851,25 @@ func subtractWindowsInPlace(source []TimeWindow, subtrahends []TimeWindow) []Tim
 
 	var nextBuf [32]TimeWindow
 	for _, sub := range subs {
-		nextResult := nextBuf[:0]
+		nextCount := 0
 		for _, s := range source {
 			if sub.Start >= s.End || sub.End <= s.Start {
-				nextResult = append(nextResult, s)
-			} else {
-				if sub.Start > s.Start {
-					nextResult = append(nextResult, TimeWindow{Start: s.Start, End: sub.Start})
+				if nextCount < len(nextBuf) {
+					nextBuf[nextCount] = s
+					nextCount++
 				}
-				if sub.End < s.End {
-					nextResult = append(nextResult, TimeWindow{Start: sub.End, End: s.End})
+			} else {
+				if sub.Start > s.Start && nextCount < len(nextBuf) {
+					nextBuf[nextCount] = TimeWindow{Start: s.Start, End: sub.Start}
+					nextCount++
+				}
+				if sub.End < s.End && nextCount < len(nextBuf) {
+					nextBuf[nextCount] = TimeWindow{Start: sub.End, End: s.End}
+					nextCount++
 				}
 			}
 		}
-		source = append(source[:0], nextResult...)
+		source = append(source[:0], nextBuf[:nextCount]...)
 	}
 	return source
 }
