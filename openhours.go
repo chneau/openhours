@@ -17,8 +17,19 @@ var (
 	weekdayToDayIdx = [7]int{6, 0, 1, 2, 3, 4, 5} // Sunday (0) -> 6, Monday (1) -> 0, ...
 
 	emptyOH      = &OpeningHours{expression: "", windows: nil}
-	alwaysOpenOH = &OpeningHours{expression: "24/7", windows: []TimeWindow{{Start: 0, End: minutesPerWeek}}}
+	alwaysOpenOH = makeAlwaysOpenOH()
 )
+
+func makeAlwaysOpenOH() *OpeningHours {
+	oh := &OpeningHours{
+		expression: "24/7",
+		windows:    []TimeWindow{{Start: 0, End: minutesPerWeek}},
+	}
+	for i := range oh.bitmask {
+		oh.bitmask[i] = ^uint64(0)
+	}
+	return oh
+}
 
 // TimeWindow represents a minute interval [Start, End) within a week (0 to 10080 minutes).
 // Monday 00:00 is minute 0, and Sunday 24:00 is minute 10080.
@@ -32,6 +43,7 @@ type TimeWindow struct {
 type OpeningHours struct {
 	expression string
 	windows    []TimeWindow
+	bitmask    [158]uint64
 }
 
 // Parse parses an OSM opening_hours expression string and returns an *OpeningHours instance.
@@ -89,11 +101,45 @@ func Parse(expression string) *OpeningHours {
 			}
 		}
 		windows := bakeRules(rules)
-		oh = &OpeningHours{expression: expression, windows: windows}
+		bm := bakeBitmask(windows)
+		oh = &OpeningHours{expression: expression, windows: windows, bitmask: bm}
 	}
 
 	internPool[expression] = oh
 	return oh
+}
+
+func bakeBitmask(windows []TimeWindow) [158]uint64 {
+	var bm [158]uint64
+	for _, w := range windows {
+		start := w.Start
+		end := w.End
+		if start < 0 {
+			start = 0
+		}
+		if end > minutesPerWeek {
+			end = minutesPerWeek
+		}
+		if start >= end {
+			continue
+		}
+		startWord := start >> 6
+		endWord := (end - 1) >> 6
+		startBit := start & 63
+		endBit := (end - 1) & 63
+
+		if startWord == endWord {
+			mask := ((uint64(1) << (endBit - startBit + 1)) - 1) << startBit
+			bm[startWord] |= mask
+		} else {
+			bm[startWord] |= (^uint64(0)) << startBit
+			for i := startWord + 1; i < endWord; i++ {
+				bm[i] = ^uint64(0)
+			}
+			bm[endWord] |= (^uint64(0)) >> (63 - endBit)
+		}
+	}
+	return bm
 }
 
 // Raw returns the raw expression string.
@@ -137,7 +183,7 @@ func (oh *OpeningHours) IsOpen(t time.Time) bool {
 		day := weekdayToDayIdx[t.Weekday()]
 		weekMin = day*1440 + hour*60 + min
 	}
-	return oh.findWindowIndex(weekMin) != -1
+	return (oh.bitmask[uint(weekMin)>>6] & (uint64(1) << (uint(weekMin) & 63))) != 0
 }
 
 // Match returns true if the time t is within opening hours.
