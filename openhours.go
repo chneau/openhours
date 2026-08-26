@@ -2,9 +2,7 @@ package openhours
 
 import (
 	"encoding/json"
-	"math"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,14 +33,14 @@ type OpeningHours struct {
 // If the expression is invalid or empty, it returns a safe instance with empty schedule (IsOpen = false).
 // Identical expressions are interned to conserve memory.
 func Parse(expression string) *OpeningHours {
-	trimmed := strings.TrimSpace(expression)
-
 	internMu.RLock()
 	if cached, ok := internPool[expression]; ok {
 		internMu.RUnlock()
 		return cached
 	}
 	internMu.RUnlock()
+
+	trimmed := strings.TrimSpace(expression)
 
 	internMu.Lock()
 	defer internMu.Unlock()
@@ -56,12 +54,21 @@ func Parse(expression string) *OpeningHours {
 	} else if trimmed == "24/7" {
 		oh = &OpeningHours{expression: expression, windows: []TimeWindow{{Start: 0, End: minutesPerWeek}}}
 	} else {
-		rawRules := strings.Split(expression, ";")
 		var rules []openingRule
-		for _, r := range rawRules {
-			r = strings.TrimSpace(r)
-			if r != "" {
-				rules = append(rules, parseOpeningRule(r))
+		// Split by ';' without unnecessary allocations
+		remaining := expression
+		for len(remaining) > 0 {
+			var part string
+			if idx := strings.IndexByte(remaining, ';'); idx >= 0 {
+				part = remaining[:idx]
+				remaining = remaining[idx+1:]
+			} else {
+				part = remaining
+				remaining = ""
+			}
+			part = strings.TrimSpace(part)
+			if part != "" {
+				rules = append(rules, parseOpeningRule(part))
 			}
 		}
 		windows := bakeRules(rules)
@@ -173,11 +180,12 @@ func (oh *OpeningHours) GetTimeToOpenForDuration(from time.Time, duration time.D
 	if oh == nil || len(oh.windows) == 0 {
 		return nil
 	}
-	req := int(math.Ceil(duration.Minutes()))
-	if req <= 0 {
+	if duration <= 0 {
 		zero := time.Duration(0)
 		return &zero
 	}
+	// Integer ceiling: (duration + time.Minute - 1) / time.Minute
+	req := int((duration + (time.Minute - 1)) / time.Minute)
 	if req > minutesPerWeek {
 		return nil
 	}
@@ -246,18 +254,36 @@ func (oh *OpeningHours) When(from time.Time, duration time.Duration) *time.Time 
 
 // NextDur returns whether currently open, and the duration until state changes (shift ends or opens).
 func (oh *OpeningHours) NextDur(t time.Time) (bool, time.Duration) {
-	if oh.IsOpen(t) {
-		end := oh.GetCurrentShiftEnd(t)
-		if end == nil {
-			return true, time.Duration(minutesPerWeek) * time.Minute
-		}
-		return true, end.Sub(t)
-	}
-	toOpen := oh.GetTimeToOpen(t)
-	if toOpen == nil {
+	if oh == nil || len(oh.windows) == 0 {
 		return false, 0
 	}
-	return false, *toOpen
+	min := getWeekMinute(t)
+	idx := oh.findWindowIndex(min)
+	if idx != -1 {
+		// Currently open
+		if len(oh.windows) == 1 && oh.windows[0].Start == 0 && oh.windows[0].End == minutesPerWeek {
+			return true, time.Duration(minutesPerWeek) * time.Minute
+		}
+		w := oh.windows[idx]
+		diffMin := w.End - min
+		if idx == len(oh.windows)-1 && w.End == minutesPerWeek && oh.windows[0].Start == 0 {
+			diffMin = (minutesPerWeek - min) + oh.windows[0].End
+		}
+		return true, time.Duration(diffMin) * time.Minute
+	}
+
+	// Currently closed: calculate time to open directly without heap allocation
+	if len(oh.windows) == 1 && oh.windows[0].Start == 0 && oh.windows[0].End == minutesPerWeek {
+		return false, 0
+	}
+	openIdx := oh.findFirstWindowStartingAtOrAfter(min)
+	if openIdx < len(oh.windows) && oh.windows[openIdx].Start <= min {
+		return false, 0
+	}
+	if openIdx < len(oh.windows) {
+		return false, time.Duration(oh.windows[openIdx].Start-min) * time.Minute
+	}
+	return false, time.Duration((minutesPerWeek-min)+oh.windows[0].Start) * time.Minute
 }
 
 // NextDate returns whether currently open, and the time when the status changes.
@@ -270,11 +296,12 @@ func (oh *OpeningHours) findWindowIndex(t int) int {
 	low := 0
 	high := len(oh.windows) - 1
 	for low <= high {
-		mid := low + (high-low)/2
-		if t >= oh.windows[mid].Start && t < oh.windows[mid].End {
+		mid := int(uint(low+high) >> 1)
+		w := oh.windows[mid]
+		if t >= w.Start && t < w.End {
 			return mid
 		}
-		if t < oh.windows[mid].Start {
+		if t < w.Start {
 			high = mid - 1
 		} else {
 			low = mid + 1
@@ -288,7 +315,7 @@ func (oh *OpeningHours) findFirstWindowStartingAtOrAfter(t int) int {
 	high := len(oh.windows) - 1
 	result := len(oh.windows)
 	for low <= high {
-		mid := low + (high-low)/2
+		mid := int(uint(low+high) >> 1)
 		if oh.windows[mid].End > t {
 			result = mid
 			high = mid - 1
@@ -324,16 +351,16 @@ func getWeekMinute(dt time.Time) int {
 }
 
 type timeRange struct {
-	StartMin  int
-	EndMin    int
-	DayOffset int
+	StartMin  int16
+	EndMin    int16
+	DayOffset int8
 }
 
 type openingRule struct {
-	DayMask    int
-	TimeRanges []timeRange
+	DayMask    uint8
 	IsOff      bool
 	IsAllDay   bool
+	TimeRanges []timeRange
 }
 
 func parseOpeningRule(ruleString string) openingRule {
@@ -347,23 +374,33 @@ func parseOpeningRule(ruleString string) openingRule {
 		ruleString = strings.TrimSpace(ruleString[:len(ruleString)-7])
 	}
 
-	parts := strings.Fields(ruleString)
-	if len(parts) == 0 {
+	ruleString = strings.TrimSpace(ruleString)
+	if ruleString == "" {
 		return rule
 	}
 
-	dayMask := parseDayMask(parts[0])
+	firstSpace := strings.IndexByte(ruleString, ' ')
+	var firstToken, remainder string
+	if firstSpace >= 0 {
+		firstToken = strings.TrimSpace(ruleString[:firstSpace])
+		remainder = strings.TrimSpace(ruleString[firstSpace+1:])
+	} else {
+		firstToken = ruleString
+		remainder = ""
+	}
+
+	dayMask := parseDayMask(firstToken)
 	if dayMask > 0 {
-		rule.DayMask = dayMask
-		if len(parts) > 1 {
-			rule.TimeRanges = parseTimes(strings.Join(parts[1:], " "))
+		rule.DayMask = uint8(dayMask)
+		if remainder != "" {
+			rule.TimeRanges = parseTimes(remainder)
 			rule.IsAllDay = false
 		} else {
 			rule.IsAllDay = true
 		}
 	} else {
 		rule.DayMask = 0x7F // All 7 days
-		rule.TimeRanges = parseTimes(strings.Join(parts, " "))
+		rule.TimeRanges = parseTimes(ruleString)
 		rule.IsAllDay = false
 	}
 	return rule
@@ -371,19 +408,25 @@ func parseOpeningRule(ruleString string) openingRule {
 
 func parseDayMask(dayPart string) int {
 	mask := 0
-	groups := strings.Split(dayPart, ",")
-	for _, group := range groups {
+	remaining := dayPart
+	for len(remaining) > 0 {
+		var group string
+		if idx := strings.IndexByte(remaining, ','); idx >= 0 {
+			group = remaining[:idx]
+			remaining = remaining[idx+1:]
+		} else {
+			group = remaining
+			remaining = ""
+		}
 		group = strings.TrimSpace(group)
 		if group == "" {
 			continue
 		}
-		if strings.Contains(group, "-") {
-			rangeParts := strings.Split(group, "-")
-			if len(rangeParts) != 2 {
-				return 0
-			}
-			start := dayToIndex(rangeParts[0])
-			end := dayToIndex(rangeParts[1])
+		if dashIdx := strings.IndexByte(group, '-'); dashIdx >= 0 {
+			rangePart1 := group[:dashIdx]
+			rangePart2 := group[dashIdx+1:]
+			start := dayToIndex(rangePart1)
+			end := dayToIndex(rangePart2)
 			if start != -1 && end != -1 {
 				for curr := start; ; curr = (curr + 1) % 7 {
 					mask |= (1 << curr)
@@ -407,20 +450,26 @@ func parseDayMask(dayPart string) int {
 }
 
 func dayToIndex(s string) int {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "mo":
+	s = strings.TrimSpace(s)
+	if len(s) != 2 {
+		return -1
+	}
+	c0 := s[0] | 0x20
+	c1 := s[1] | 0x20
+	switch {
+	case c0 == 'm' && c1 == 'o':
 		return 0
-	case "tu":
+	case c0 == 't' && c1 == 'u':
 		return 1
-	case "we":
+	case c0 == 'w' && c1 == 'e':
 		return 2
-	case "th":
+	case c0 == 't' && c1 == 'h':
 		return 3
-	case "fr":
+	case c0 == 'f' && c1 == 'r':
 		return 4
-	case "sa":
+	case c0 == 's' && c1 == 'a':
 		return 5
-	case "su":
+	case c0 == 's' && c1 == 'u':
 		return 6
 	default:
 		return -1
@@ -429,30 +478,37 @@ func dayToIndex(s string) int {
 
 func parseTimes(timePart string) []timeRange {
 	var ranges []timeRange
-	groups := strings.Split(timePart, ",")
-	for _, group := range groups {
+	remaining := timePart
+	for len(remaining) > 0 {
+		var group string
+		if idx := strings.IndexByte(remaining, ','); idx >= 0 {
+			group = remaining[:idx]
+			remaining = remaining[idx+1:]
+		} else {
+			group = remaining
+			remaining = ""
+		}
 		group = strings.TrimSpace(group)
 		if group == "" {
 			continue
 		}
-		if strings.Contains(group, "-") {
-			parts := strings.Split(group, "-")
-			if len(parts) == 2 {
-				s, ok1 := tryParseTimeMin(parts[0])
-				e, ok2 := tryParseTimeMin(parts[1])
-				if ok1 && ok2 {
-					if s < e {
-						ranges = append(ranges, timeRange{StartMin: s, EndMin: e, DayOffset: 0})
-					} else if s > e {
-						ranges = append(ranges, timeRange{StartMin: s, EndMin: 1440, DayOffset: 0})
-						ranges = append(ranges, timeRange{StartMin: 0, EndMin: e, DayOffset: 1})
-					}
+		if dashIdx := strings.IndexByte(group, '-'); dashIdx >= 0 {
+			part1 := group[:dashIdx]
+			part2 := group[dashIdx+1:]
+			s, ok1 := tryParseTimeMin(part1)
+			e, ok2 := tryParseTimeMin(part2)
+			if ok1 && ok2 {
+				if s < e {
+					ranges = append(ranges, timeRange{StartMin: int16(s), EndMin: int16(e), DayOffset: 0})
+				} else if s > e {
+					ranges = append(ranges, timeRange{StartMin: int16(s), EndMin: 1440, DayOffset: 0})
+					ranges = append(ranges, timeRange{StartMin: 0, EndMin: int16(e), DayOffset: 1})
 				}
 			}
 		} else if strings.HasSuffix(group, "+") {
-			sOnly, ok := tryParseTimeMin(strings.TrimSuffix(group, "+"))
+			sOnly, ok := tryParseTimeMin(group[:len(group)-1])
 			if ok {
-				ranges = append(ranges, timeRange{StartMin: sOnly, EndMin: 1440, DayOffset: 0})
+				ranges = append(ranges, timeRange{StartMin: int16(sOnly), EndMin: 1440, DayOffset: 0})
 			}
 		}
 	}
@@ -464,13 +520,31 @@ func tryParseTimeMin(s string) (int, bool) {
 	if s == "24:00" {
 		return 1440, true
 	}
-	parts := strings.Split(s, ":")
-	if len(parts) == 2 {
-		h, err1 := strconv.Atoi(parts[0])
-		m, err2 := strconv.Atoi(parts[1])
-		if err1 == nil && err2 == nil && h >= 0 && h < 24 && m >= 0 && m < 60 {
-			return h*60 + m, true
+	colonIdx := strings.IndexByte(s, ':')
+	if colonIdx < 1 || colonIdx >= len(s)-1 {
+		return 0, false
+	}
+	h, ok1 := parseTwoDigits(s[:colonIdx])
+	m, ok2 := parseTwoDigits(s[colonIdx+1:])
+	if ok1 && ok2 && h >= 0 && h < 24 && m >= 0 && m < 60 {
+		return h*60 + m, true
+	}
+	return 0, false
+}
+
+func parseTwoDigits(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) == 1 {
+		if s[0] >= '0' && s[0] <= '9' {
+			return int(s[0] - '0'), true
 		}
+		return 0, false
+	}
+	if len(s) == 2 {
+		if s[0] >= '0' && s[0] <= '9' && s[1] >= '0' && s[1] <= '9' {
+			return int(s[0]-'0')*10 + int(s[1]-'0'), true
+		}
+		return 0, false
 	}
 	return 0, false
 }
@@ -490,11 +564,11 @@ func bakeRules(rules []openingRule) []TimeWindow {
 				ruleWindows = append(ruleWindows, TimeWindow{Start: dayOffset, End: dayOffset + 1440})
 			} else {
 				for _, tr := range rule.TimeRanges {
-					targetDay := (day + tr.DayOffset) % 7
+					targetDay := (day + int(tr.DayOffset)) % 7
 					dayOffset := targetDay * 1440
 					ruleWindows = append(ruleWindows, TimeWindow{
-						Start: dayOffset + tr.StartMin,
-						End:   dayOffset + tr.EndMin,
+						Start: dayOffset + int(tr.StartMin),
+						End:   dayOffset + int(tr.EndMin),
 					})
 				}
 			}
@@ -522,14 +596,14 @@ func mergeWindows(intervals []TimeWindow) []TimeWindow {
 		return intervals[i].Start < intervals[j].Start
 	})
 
-	merged := []TimeWindow{intervals[0]}
+	merged := make([]TimeWindow, 0, len(intervals))
+	merged = append(merged, intervals[0])
 	for i := 1; i < len(intervals); i++ {
 		curr := intervals[i]
 		lastIdx := len(merged) - 1
-		last := merged[lastIdx]
 
-		if curr.Start <= last.End {
-			if curr.End > last.End {
+		if curr.Start <= merged[lastIdx].End {
+			if curr.End > merged[lastIdx].End {
 				merged[lastIdx].End = curr.End
 			}
 		} else {
@@ -561,4 +635,5 @@ func subtractWindows(source []TimeWindow, subtrahends []TimeWindow) []TimeWindow
 	}
 	return result
 }
+
 
