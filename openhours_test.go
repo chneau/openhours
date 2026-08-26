@@ -2,6 +2,7 @@ package openhours
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -514,6 +515,108 @@ func TestNilSafety(t *testing.T) {
 	}
 }
 
+func TestRunCSBenchmarkComparison(t *testing.T) {
+	fmt.Println("\n========================================================")
+	fmt.Println("Running OpeningHours Benchmarks (Full Standard Suite)")
+	fmt.Println("========================================================")
+
+	complexExpr := "Mo-Fr 08:00-12:00, 13:00-17:00; Sa 08:00-12:00"
+	oh := Parse(complexExpr)
+	start := time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC)
+	fixedTime := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	iterations := 10000
+	fourHours := 4 * time.Hour
+
+	// 1. Benchmark IsOpen (Rolling 100k calls with timestamp addition)
+	t0 := time.Now()
+	for i := 0; i < iterations*10; i++ {
+		_ = oh.IsOpen(start.Add(time.Duration(i) * time.Minute))
+	}
+	dur1 := time.Since(t0)
+	fmt.Printf("1. IsOpen (100k rolling calls):            %4d ms (%.3f us/op)\n", dur1.Milliseconds(), float64(dur1.Nanoseconds())/float64(iterations*10)/1000.0)
+
+	// 2. Benchmark IsOpen (Pure 1M calls with fixed timestamp)
+	t0 = time.Now()
+	for i := 0; i < 1_000_000; i++ {
+		_ = oh.IsOpen(fixedTime)
+	}
+	dur2 := time.Since(t0)
+	fmt.Printf("2. IsOpen (1M pure calls):                 %4d ms (%.3f us/op)\n", dur2.Milliseconds(), float64(dur2.Nanoseconds())/1_000_000.0/1000.0)
+
+	// 3. Benchmark GetTimeToOpen (10k calls)
+	t0 = time.Now()
+	for i := 0; i < iterations; i++ {
+		_ = oh.GetTimeToOpen(start.Add(time.Duration(i%168) * time.Hour))
+	}
+	dur3 := time.Since(t0)
+	fmt.Printf("3. GetTimeToOpen (10k calls):              %4d ms (%.3f us/op)\n", dur3.Milliseconds(), float64(dur3.Nanoseconds())/float64(iterations)/1000.0)
+
+	// 4. Benchmark GetTimeToOpenForDuration 4h (10k calls)
+	t0 = time.Now()
+	for i := 0; i < iterations; i++ {
+		_ = oh.GetTimeToOpenForDuration(start.Add(time.Duration(i%168)*time.Hour), fourHours)
+	}
+	dur4 := time.Since(t0)
+	fmt.Printf("4. GetTimeToOpenForDuration 4h (10k calls):%4d ms (%.3f us/op)\n", dur4.Milliseconds(), float64(dur4.Nanoseconds())/float64(iterations)/1000.0)
+
+	// 5. Benchmark When 4h (10k calls)
+	t0 = time.Now()
+	for i := 0; i < iterations; i++ {
+		_ = oh.When(start.Add(time.Duration(i%168)*time.Hour), fourHours)
+	}
+	dur5 := time.Since(t0)
+	fmt.Printf("5. When 4h (10k calls):                    %4d ms (%.3f us/op)\n", dur5.Milliseconds(), float64(dur5.Nanoseconds())/float64(iterations)/1000.0)
+
+	// 6. Benchmark NextDur (10k calls)
+	t0 = time.Now()
+	for i := 0; i < iterations; i++ {
+		_, _ = oh.NextDur(start.Add(time.Duration(i%168) * time.Hour))
+	}
+	dur6 := time.Since(t0)
+	fmt.Printf("6. NextDur (10k calls):                    %4d ms (%.3f us/op)\n", dur6.Milliseconds(), float64(dur6.Nanoseconds())/float64(iterations)/1000.0)
+
+	// 7. Benchmark NextDate (10k calls)
+	t0 = time.Now()
+	for i := 0; i < iterations; i++ {
+		_, _ = oh.NextDate(start.Add(time.Duration(i%168) * time.Hour))
+	}
+	dur7 := time.Since(t0)
+	fmt.Printf("7. NextDate (10k calls):                   %4d ms (%.3f us/op)\n", dur7.Milliseconds(), float64(dur7.Nanoseconds())/float64(iterations)/1000.0)
+
+	// 8. Benchmark Parse (Cached 1k calls)
+	t0 = time.Now()
+	for i := 0; i < 1000; i++ {
+		_ = Parse(complexExpr)
+	}
+	dur8 := time.Since(t0)
+	fmt.Printf("8. Parse Cached (1k calls):                %4d ms (%.3f us/op)\n", dur8.Milliseconds(), float64(dur8.Nanoseconds())/1000.0/1000.0)
+
+	// 9. Benchmark JSON Deserialization (1k calls)
+	jsonData := []byte(`"` + complexExpr + `"`)
+	t0 = time.Now()
+	for i := 0; i < 1000; i++ {
+		var deserialized *OpeningHours
+		_ = json.Unmarshal(jsonData, &deserialized)
+	}
+	dur9 := time.Since(t0)
+	fmt.Printf("9. JSON Deserialize (1k calls):            %4d ms (%.3f us/op)\n", dur9.Milliseconds(), float64(dur9.Nanoseconds())/1000.0/1000.0)
+
+	// 10. Simulation Stress Test (5,000 unique locations)
+	t0 = time.Now()
+	locations := make([]*OpeningHours, 0, 5000)
+	for i := 0; i < 5000; i++ {
+		hStart := 8 + (i%60)/60
+		mStart := (i % 60)
+		hEnd := 17 + (i%60)/60
+		mEnd := (i % 60)
+		expr := fmt.Sprintf("Mo-Fr %02d:%02d-%02d:%02d", hStart, mStart, hEnd, mEnd)
+		locations = append(locations, Parse(expr))
+	}
+	dur10 := time.Since(t0)
+	fmt.Printf("10. Stress Test (5,000 unique objects):    %4d ms (%.4f ms/obj)\n", dur10.Milliseconds(), float64(dur10.Nanoseconds())/5000.0/1000000.0)
+	fmt.Println("========================================================")
+}
+
 func timePtr(t time.Time) *time.Time {
 	return &t
 }
@@ -523,7 +626,7 @@ func durPtr(d time.Duration) *time.Duration {
 }
 
 // ====================================================================
-// Benchmarks
+// Standard Go Benchmarks
 // ====================================================================
 
 func BenchmarkParse_Uncached(b *testing.B) {
@@ -588,3 +691,25 @@ func BenchmarkNextDur(b *testing.B) {
 		_, _ = oh.NextDur(t)
 	}
 }
+
+func BenchmarkNextDate(b *testing.B) {
+	oh := Parse("mo-fr 08:00-12:00, 13:00-17:00; sa 08:00-12:00")
+	t := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = oh.NextDate(t)
+	}
+}
+
+func BenchmarkJSONDeserialize(b *testing.B) {
+	expr := "mo-fr 08:00-12:00, 13:00-17:00; sa 08:00-12:00"
+	jsonData := []byte(`"` + expr + `"`)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		var deserialized *OpeningHours
+		_ = json.Unmarshal(jsonData, &deserialized)
+	}
+}
+
