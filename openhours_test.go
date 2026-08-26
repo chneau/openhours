@@ -619,8 +619,7 @@ func TestRunCSBenchmarkComparison(t *testing.T) {
 	jsonData := []byte(`"` + complexExpr + `"`)
 	t0 = time.Now()
 	for i := 0; i < 1000; i++ {
-		var deserialized *OpeningHours
-		_ = json.Unmarshal(jsonData, &deserialized)
+		_, _ = DecodeJSON(jsonData)
 	}
 	dur9 := time.Since(t0)
 	fmt.Printf("9. JSON Deserialize (1k calls):            %4d ms (%.3f us/op)\n", dur9.Milliseconds(), float64(dur9.Nanoseconds())/1000.0/1000.0)
@@ -779,3 +778,89 @@ func BenchmarkJSONDeserialize(b *testing.B) {
 	}
 }
 
+func mondayTestTime() time.Time {
+	return time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+}
+
+func TestDecodeExpression(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"plain", `"Mo-Fr 08:00-17:00"`, "Mo-Fr 08:00-17:00", false},
+		{"escaped quote", `"Mo 08:00-12:00, 13:00-17:00\" "`, "Mo 08:00-12:00, 13:00-17:00\" ", false},
+		{"escaped backslash", `"a\\b"`, `a\b`, false},
+		{"escaped slash", `"a\/b"`, "a/b", false},
+		{"escaped newline", `"a\nb"`, "a\nb", false},
+		{"unicode", `"caf\u00e9"`, "café", false},
+		{"empty string", `""`, "", false},
+		{"24-7", `"24/7"`, "24/7", false},
+		// Errors
+		{"not a string (object)", `{}`, "", true},
+		{"not a string (number)", `123`, "", true},
+		{"unterminated", `"abc`, "", true},
+		{"trailing garbage", `"abc"x`, "", true},
+		{"bad escape", `"a\xb"`, "", true},
+		{"bad unicode", `"a\uZZZZ"`, "", true},
+		{"lone surrogate", `"\ud800"`, "", true},
+		{"control char", "\"a\x01b\"", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := decodeExpression([]byte(c.in))
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("decodeExpression(%q) expected error, got %q", c.in, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decodeExpression(%q) unexpected error: %v", c.in, err)
+			}
+			if got != c.want {
+				t.Fatalf("decodeExpression(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestDecodeJSON(t *testing.T) {
+	oh, err := DecodeJSON([]byte(`"Mo-Fr 08:00-17:00"`))
+	if err != nil {
+		t.Fatalf("DecodeJSON error: %v", err)
+	}
+	if oh == nil || oh.Raw() != "Mo-Fr 08:00-17:00" {
+		t.Fatalf("DecodeJSON plain: got %v", oh)
+	}
+	if !oh.IsOpen(mondayTestTime()) {
+		t.Fatalf("DecodeJSON result not open Mon 10:00")
+	}
+	// Repeated decode returns the shared interned instance.
+	oh2, _ := DecodeJSON([]byte(`"Mo-Fr 08:00-17:00"`))
+	if oh2 != oh {
+		t.Fatalf("DecodeJSON should return the shared interned instance")
+	}
+	// Escaped string goes through the unescape path and does not panic.
+	_, err = DecodeJSON([]byte(`"Mo 08:00-12:00\" "`))
+	if err != nil {
+		t.Fatalf("DecodeJSON escaped errored: %v", err)
+	}
+	// Malformed returns an error.
+	if _, err := DecodeJSON([]byte(`"unterminated`)); err == nil {
+		t.Fatalf("DecodeJSON should error on malformed JSON")
+	}
+	if _, err := DecodeJSON([]byte(`null`)); err == nil {
+		t.Fatalf("DecodeJSON should error on null (not a string)")
+	}
+}
+
+func BenchmarkDecodeJSON(b *testing.B) {
+	data := []byte(`"mo-fr 08:00-12:00, 13:00-17:00; sa 08:00-12:00"`)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = DecodeJSON(data)
+	}
+}

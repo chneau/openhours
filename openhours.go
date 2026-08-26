@@ -2,11 +2,14 @@ package openhours
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
+	"unsafe"
 )
 
 const minutesPerWeek = 10080
@@ -499,20 +502,193 @@ func (oh *OpeningHours) MarshalJSON() ([]byte, error) {
 	return json.Marshal(oh.expression)
 }
 
-// UnmarshalJSON deserializes OpeningHours from a JSON string.
+// UnmarshalJSON deserializes OpeningHours from a JSON string, without going
+// through encoding/json's reflection-based dispatch in the decode path.
 func (oh *OpeningHours) UnmarshalJSON(data []byte) error {
-	n := len(data)
-	if n >= 2 && data[0] == '"' && data[n-1] == '"' && !slices.Contains(data, '\\') {
-		*oh = *Parse(string(data[1 : n-1]))
-		return nil
-	}
-	var expr string
-	if err := json.Unmarshal(data, &expr); err != nil {
+	expr, err := decodeExpression(data)
+	if err != nil {
 		return err
 	}
-	parsed := Parse(expr)
-	*oh = *parsed
+	*oh = *Parse(expr)
 	return nil
+}
+
+// DecodeJSON parses a JSON string of an opening_hours expression and returns the
+// corresponding *OpeningHours (a shared, interned instance — not a copy). It is a
+// dependency-free, reflection-free decode entry point: the common plain-string
+// case resolves through the lock-free L1 cache with zero allocations, and escaped
+// JSON strings are handled by a small hand-rolled scanner instead of
+// encoding/json.
+func DecodeJSON(data []byte) (*OpeningHours, error) {
+	if len(data) >= 2 && data[0] == '"' && data[len(data)-1] == '"' && !hasJSONEscape(data[1:len(data)-1]) {
+		inner := data[1 : len(data)-1]
+		if slot := l1Cache.Load(); slot != nil && stringEqualsBytes(slot.expr, inner) {
+			return slot.oh, nil
+		}
+		return Parse(string(inner)), nil
+	}
+	expr, err := decodeExpression(data)
+	if err != nil {
+		return nil, err
+	}
+	return Parse(expr), nil
+}
+
+// decodeExpression validates that data is a JSON string and returns the decoded
+// opening_hours expression, handling the standard JSON escapes. It performs no
+// reflection and does not route through encoding/json.
+func decodeExpression(data []byte) (string, error) {
+	n := len(data)
+	if n < 2 || data[0] != '"' {
+		return "", errNotJSONString
+	}
+	// Fast path: a plain quoted string with no escapes.
+	inner := data[1:]
+	for i := 0; i < len(inner); i++ {
+		c := inner[i]
+		if c == '\\' || c < 0x20 {
+			return decodeEscaped(data)
+		}
+		if c == '"' {
+			if i == len(inner)-1 {
+				return string(data[1 : n-1]), nil
+			}
+			return "", errNotJSONString
+		}
+	}
+	return "", errNotJSONString
+}
+
+var (
+	errNotJSONString         = errors.New("openhours: invalid character looking for beginning of value")
+	errInvalidUnicode        = errors.New("openhours: invalid unicode escape")
+	errInvalidEscape         = errors.New("openhours: invalid escape")
+	errInvalidControlChar    = errors.New("openhours: invalid control character")
+	errUnexpectedEOFInString = errors.New("openhours: unexpected end of JSON input")
+)
+
+// hasJSONEscape reports whether raw string content contains a backslash or a
+// control character, i.e. input that needs JSON unescaping.
+func hasJSONEscape(s []byte) bool {
+	for _, c := range s {
+		if c == '\\' || c < 0x20 {
+			return true
+		}
+	}
+	return false
+}
+
+// stringEqualsBytes compares a string against a byte slice without allocating.
+// It only reads the string's backing memory (never writes) and never retains the
+// byte slice, so the read-only view is safe.
+func stringEqualsBytes(s string, b []byte) bool {
+	if len(s) != len(b) {
+		return false
+	}
+	if len(b) == 0 {
+		return true
+	}
+	sb := unsafe.Slice(unsafe.StringData(s), len(s))
+	for i := range b {
+		if sb[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// decodeEscaped unescapes a JSON string that contains backslash escapes.
+func decodeEscaped(data []byte) (string, error) {
+	n := len(data)
+	if n < 2 || data[0] != '"' {
+		return "", errNotJSONString
+	}
+	buf := make([]byte, 0, n-1)
+	i := 1
+	for i < n {
+		c := data[i]
+		switch {
+		case c == '"':
+			return string(buf), nil
+		case c == '\\':
+			if i+1 >= n {
+				return "", errUnexpectedEOFInString
+			}
+			e := data[i+1]
+			switch e {
+			case '"', '\\', '/':
+				buf = append(buf, e)
+				i += 2
+			case 'b':
+				buf = append(buf, '\b')
+				i += 2
+			case 'f':
+				buf = append(buf, '\f')
+				i += 2
+			case 'n':
+				buf = append(buf, '\n')
+				i += 2
+			case 'r':
+				buf = append(buf, '\r')
+				i += 2
+			case 't':
+				buf = append(buf, '\t')
+				i += 2
+			case 'u':
+				if i+6 > n {
+					return "", errUnexpectedEOFInString
+				}
+				r, ok := decodeHex4(data[i+2 : i+6])
+				if !ok {
+					return "", errInvalidUnicode
+				}
+				if r <= 0x7F {
+					buf = append(buf, byte(r))
+				} else {
+					var enc [4]byte
+					m := utf8.EncodeRune(enc[:], r)
+					buf = append(buf, enc[:m]...)
+				}
+				i += 6
+			default:
+				return "", errInvalidEscape
+			}
+		case c < 0x20:
+			return "", errInvalidControlChar
+		default:
+			buf = append(buf, c)
+			i++
+		}
+	}
+	return "", errUnexpectedEOFInString
+}
+
+func decodeHex4(b []byte) (rune, bool) {
+	if len(b) != 4 {
+		return 0, false
+	}
+	var r rune
+	for _, c := range b {
+		r <<= 4
+		switch {
+		case c >= '0' && c <= '9':
+			r |= rune(c - '0')
+		case c >= 'a' && c <= 'f':
+			r |= rune(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			r |= rune(c-'A') + 10
+		default:
+			return 0, false
+		}
+	}
+	// Reject UTF-16 surrogate halves without a pair and out-of-range values.
+	if r >= 0xD800 && r <= 0xDFFF {
+		return 0, false
+	}
+	if r > 0x10FFFF {
+		return 0, false
+	}
+	return r, true
 }
 
 func getWeekMinute(dt time.Time) (int, time.Duration) {
@@ -981,5 +1157,3 @@ func subtractWindowsInPlace(source []TimeWindow, subtrahends []TimeWindow) []Tim
 	}
 	return source
 }
-
-

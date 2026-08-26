@@ -17,6 +17,7 @@ A high-performance, zero-allocation Go parser and interval-math evaluator for Op
 - **Overrides & Exclusions**: Handles `off` / `closed` rules overriding previous rules (e.g. `Mo-Su 00:00-24:00; Tu 12:00-13:00 off`).
 - **Duration Availability**: Find wait times for contiguous tasks of duration $D$ (`GetTimeToOpenForDuration` / `When`).
 - **Standard JSON Support**: Native `json.Marshaler` and `json.Unmarshaler` implementations.
+- **Reflection-free JSON Decode**: A dependency-free `DecodeJSON([]byte)` entry point that decodes a JSON string in **~26 ns with zero allocations** (`*OpeningHours` is the shared interned instance) — no runtime reflection, no third-party modules.
 
 ---
 
@@ -70,6 +71,18 @@ func main() {
 	_, nextTransitionDate := oh.NextDate(monday10am) // 2026-05-18 12:00:00 UTC
 	fmt.Println("Open now:", isOpenNow, "Remaining:", durationRemaining, "Next date:", nextTransitionDate)
 }
+```
+
+### Fast, Reflection-free JSON Decode
+
+`OpeningHours` serializes to a JSON string of the expression. Use `DecodeJSON` for a dependency-free, reflection-free decode that returns the shared interned `*OpeningHours` (~26 ns, zero allocations):
+
+```go
+oh, err := openhours.DecodeJSON([]byte(`"Mo-Fr 08:00-12:00, 13:00-17:00"`))
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(oh.IsOpen(monday10am))
 ```
 
 ---
