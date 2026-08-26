@@ -12,7 +12,19 @@ import (
 	"unsafe"
 )
 
-const minutesPerWeek = 10080
+const (
+	minutesPerWeek = 10080
+	hasMonotonic   = 1 << 63
+	nsecShift      = 30
+	nsecMask       = (1 << nsecShift) - 1
+	internalToUnix = -62135596800
+)
+
+type timeRepr struct {
+	wall uint64
+	ext  int64
+	loc  *time.Location
+}
 
 var (
 	internMu        sync.RWMutex
@@ -71,8 +83,11 @@ func Parse(expression string) *OpeningHours {
 		return alwaysOpenOH
 	}
 
-	if slot := l1Cache.Load(); slot != nil && slot.expr == expression {
-		return slot.oh
+	slot := l1Cache.Load()
+	if slot != nil {
+		if slot.expr == expression {
+			return slot.oh
+		}
 	}
 
 	internMu.RLock()
@@ -192,9 +207,15 @@ func (oh *OpeningHours) IsOpen(t time.Time) bool {
 	if oh == nil || len(oh.windows) == 0 {
 		return false
 	}
+	tt := *(*timeRepr)(unsafe.Pointer(&t))
 	var weekMin int
-	if t.Location() == time.UTC {
-		unixSec := t.Unix()
+	if tt.loc == nil || tt.loc == time.UTC {
+		var unixSec int64
+		if tt.wall&hasMonotonic != 0 {
+			unixSec = int64(tt.wall<<1>>(nsecShift+1)) + internalToUnix
+		} else {
+			unixSec = tt.ext + internalToUnix
+		}
 		weekMin = int((unixSec/60 + 4320) % minutesPerWeek)
 		if weekMin < 0 {
 			weekMin += minutesPerWeek
@@ -478,6 +499,27 @@ func (oh *OpeningHours) findFirstWindowStartingAtOrAfter(t int) int {
 	if n == 0 {
 		return 0
 	}
+	if n <= 4 {
+		if windows[0].End > t {
+			return 0
+		}
+		if n > 1 {
+			if windows[1].End > t {
+				return 1
+			}
+			if n > 2 {
+				if windows[2].End > t {
+					return 2
+				}
+				if n > 3 {
+					if windows[3].End > t {
+						return 3
+					}
+				}
+			}
+		}
+		return n
+	}
 	_ = windows[n-1] // BCE
 	low := 0
 	high := n - 1
@@ -692,13 +734,22 @@ func decodeHex4(b []byte) (rune, bool) {
 }
 
 func getWeekMinute(dt time.Time) (int, time.Duration) {
-	if dt.Location() == time.UTC {
-		unixSec := dt.Unix()
+	tt := *(*timeRepr)(unsafe.Pointer(&dt))
+	if tt.loc == nil || tt.loc == time.UTC {
+		var unixSec int64
+		var nsec int64
+		if tt.wall&hasMonotonic != 0 {
+			nsec = int64(tt.wall & nsecMask)
+			unixSec = int64(tt.wall<<1>>(nsecShift+1)) + internalToUnix
+		} else {
+			nsec = int64(tt.wall)
+			unixSec = tt.ext + internalToUnix
+		}
 		weekMin := int((unixSec/60 + 4320) % minutesPerWeek)
 		if weekMin < 0 {
 			weekMin += minutesPerWeek
 		}
-		subMinute := time.Duration(unixSec%60)*time.Second + time.Duration(dt.Nanosecond())
+		subMinute := time.Duration(unixSec%60)*time.Second + time.Duration(nsec)
 		return weekMin, subMinute
 	}
 	return getWeekMinuteNonUTC(dt)
