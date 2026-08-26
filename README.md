@@ -55,3 +55,47 @@ func main() {
 }
 ```
 
+## Development & Quality Commands
+
+Useful commands for local development, testing, benchmarking, and linting:
+
+### Testing & Coverage
+
+```bash
+# Run all tests
+go test ./...
+
+# Run tests with verbose output and race detector
+go test -v -race ./...
+
+# Run tests with statement coverage report
+go test -cover ./...
+```
+
+### Benchmarks
+
+```bash
+# Run benchmarks with memory allocation metrics
+go test -benchmem -bench=. ./...
+
+# Run specific benchmark function (e.g. IsOpen)
+go test -benchmem -bench=BenchmarkIsOpen ./...
+```
+
+### Linting & Code Quality
+
+```bash
+# Run golangci-lint
+golangci-lint run ./...
+
+# Automatically fix supported linter issues
+golangci-lint run --fix ./...
+
+# Run gocritic checks
+gocritic check ./...
+
+# Automatically fix gocritic issues (e.g. switchTrue / tagged switches)
+gocritic check -enable=switchTrue -fix ./...
+```
+
+
