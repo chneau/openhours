@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,7 +19,17 @@ var (
 
 	emptyOH      = &OpeningHours{expression: "", windows: nil}
 	alwaysOpenOH = makeAlwaysOpenOH()
+
+	// l1Cache is a small, lock-free one-slot cache of the most recently resolved
+	// expression, so that hot repeated parses skip the RWMutex and hash lookup.
+	// It is safe for concurrent use (atomic pointer publication).
+	l1Cache atomic.Pointer[parseSlot]
 )
+
+type parseSlot struct {
+	expr string
+	oh   *OpeningHours
+}
 
 func makeAlwaysOpenOH() *OpeningHours {
 	oh := &OpeningHours{
@@ -57,10 +68,15 @@ func Parse(expression string) *OpeningHours {
 		return alwaysOpenOH
 	}
 
+	if slot := l1Cache.Load(); slot != nil && slot.expr == expression {
+		return slot.oh
+	}
+
 	internMu.RLock()
 	cached, ok := internPool[expression]
 	internMu.RUnlock()
 	if ok {
+		l1Cache.Store(&parseSlot{expression, cached})
 		return cached
 	}
 
@@ -69,6 +85,7 @@ func Parse(expression string) *OpeningHours {
 	internMu.Lock()
 	defer internMu.Unlock()
 	if cached, ok := internPool[expression]; ok {
+		l1Cache.Store(&parseSlot{expression, cached})
 		return cached
 	}
 
@@ -106,6 +123,7 @@ func Parse(expression string) *OpeningHours {
 	}
 
 	internPool[expression] = oh
+	l1Cache.Store(&parseSlot{expression, oh})
 	return oh
 }
 
@@ -321,8 +339,12 @@ func (oh *OpeningHours) getTimeToOpenForDuration(from time.Time, duration time.D
 		}
 	}
 
-	// Wrap around to next week
-	for i := 0; i < len(oh.windows); i++ {
+	// Wrap around to next week. Windows after startIdx already had their total
+	// duration validated in the first loop above (future-start branch checks
+	// effectiveEnd-w.Start >= reqMin), so only windows [0..startIdx] need to be
+	// re-tested here — notably the currently-open window at startIdx, whose total
+	// length was not validated when only its remaining time was short.
+	for i := 0; i <= startIdx && i < len(oh.windows); i++ {
 		w := oh.windows[i]
 		effectiveEnd := w.End
 		if i == len(oh.windows)-1 && w.End == minutesPerWeek && oh.windows[0].Start == 0 {
