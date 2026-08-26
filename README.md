@@ -21,6 +21,30 @@ A high-performance, zero-allocation Go parser and interval-math evaluator for Op
 
 ---
 
+## 🧠 Optimizations & Engineering Architecture
+
+The Go implementation leverages specialized low-level and compiler-aware optimizations to achieve sub-10ns evaluations and zero GC overhead:
+
+1. **Dual State Representation**:
+   - **Disjoint Interval Table (`[]TimeWindow`)**: Minute intervals within the week `[0, 10080)` stored as `{Start, End int}`. Intervals are sorted and disjoint.
+   - **Hardware Bitmask Table (`[158]uint64`)**: A 10,080-bit packed bitmask where bit $i$ represents minute $i$ of the week. Point-in-time checks (`IsOpen`) execute in $O(1)$ via scalar bit tests: `(bitmask[weekMin >> 6] & (1 << (weekMin & 63))) != 0`.
+
+2. **$O(\log N)$ Binary Search with Small-Window Unrolling**:
+   - Interval-based lookups (`GetTimeToOpen`, `When`, `NextDur`) utilize binary search over the sorted `windows` array. For short schedules ($N \le 3$), branches are unrolled directly.
+   - Includes compiler Bounds Check Elimination (BCE) hints (`_ = windows[n-1]`) to eliminate slice bounds checking inside hot search loops.
+
+3. **Two-Tier Lock-Free Caching Hierarchy**:
+   - **L1 Atomic Slot**: An `atomic.Pointer[parseSlot]` holds the most recently accessed expression. Consecutive lookups on the same expression bypass lock contention and hash table lookups completely.
+   - **L2 Concurrent Intern Pool**: Backed by `sync.RWMutex` and `map[string]*OpeningHours` for deduplicating parsed expressions globally.
+
+4. **Reflection-Free JSON Fast Path**:
+   - `DecodeJSON([]byte)` directly scans quotes, validates escapes, and resolves directly to the interned `*OpeningHours` instance via `stringEqualsBytes` and `unsafe.StringData`, eliminating runtime reflection and allocations.
+
+5. **Zero-Allocation Stack Parsing**:
+   - Parsing uses stack-allocated buffers (`[8]openingRule`, `[4]timeRange`) and ASCII byte scanning, completely avoiding heap allocations during rule tokenization.
+
+---
+
 ## 🚀 Quick Start
 
 ### Installation
