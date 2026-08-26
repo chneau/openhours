@@ -156,8 +156,8 @@ func (oh *OpeningHours) GetCurrentShiftEnd(t time.Time) *time.Time {
 	}
 
 	min, subMinute := getWeekMinute(t)
-	idx := oh.findWindowIndex(min)
-	if idx == -1 {
+	idx := oh.findFirstWindowStartingAtOrAfter(min)
+	if idx >= len(oh.windows) || oh.windows[idx].Start > min {
 		return nil
 	}
 
@@ -193,14 +193,14 @@ func (oh *OpeningHours) getTimeToOpen(from time.Time) (time.Duration, bool) {
 	}
 
 	t, subMinute := getWeekMinute(from)
-	if oh.findWindowIndex(t) != -1 {
-		return 0, true
-	}
-
 	idx := oh.findFirstWindowStartingAtOrAfter(t)
 
 	if idx < len(oh.windows) {
-		d := time.Duration(oh.windows[idx].Start-t)*time.Minute - subMinute
+		w := oh.windows[idx]
+		if w.Start <= t {
+			return 0, true
+		}
+		d := time.Duration(w.Start-t)*time.Minute - subMinute
 		return d, true
 	}
 
@@ -237,6 +237,7 @@ func (oh *OpeningHours) getTimeToOpenForDuration(from time.Time, duration time.D
 	}
 
 	t, subMinute := getWeekMinute(from)
+	reqMin := int((duration + time.Minute - 1) / time.Minute)
 	startIdx := oh.findFirstWindowStartingAtOrAfter(t)
 
 	// Check windows in current week starting from t
@@ -253,8 +254,7 @@ func (oh *OpeningHours) getTimeToOpenForDuration(from time.Time, duration time.D
 				return 0, true
 			}
 		} else {
-			winDur := time.Duration(effectiveEnd-w.Start) * time.Minute
-			if winDur >= duration {
+			if effectiveEnd-w.Start >= reqMin {
 				d := time.Duration(w.Start-t)*time.Minute - subMinute
 				return d, true
 			}
@@ -269,8 +269,7 @@ func (oh *OpeningHours) getTimeToOpenForDuration(from time.Time, duration time.D
 			effectiveEnd = minutesPerWeek + oh.windows[0].End
 		}
 
-		winDur := time.Duration(effectiveEnd-w.Start) * time.Minute
-		if winDur >= duration {
+		if effectiveEnd-w.Start >= reqMin {
 			d := time.Duration((minutesPerWeek-t)+w.Start)*time.Minute - subMinute
 			return d, true
 		}
@@ -307,31 +306,29 @@ func (oh *OpeningHours) NextDur(t time.Time) (bool, time.Duration) {
 	if oh == nil || len(oh.windows) == 0 {
 		return false, 0
 	}
-	min, subMinute := getWeekMinute(t)
-	idx := oh.findWindowIndex(min)
-	if idx != -1 {
-		// Currently open
-		if len(oh.windows) == 1 && oh.windows[0].Start == 0 && oh.windows[0].End == minutesPerWeek {
-			return true, time.Duration(minutesPerWeek) * time.Minute
-		}
-		w := oh.windows[idx]
-		diffMin := w.End - min
-		if idx == len(oh.windows)-1 && w.End == minutesPerWeek && oh.windows[0].Start == 0 {
-			diffMin = (minutesPerWeek - min) + oh.windows[0].End
-		}
-		dur := time.Duration(diffMin)*time.Minute - subMinute
-		return true, dur
+	if len(oh.windows) == 1 && oh.windows[0].Start == 0 && oh.windows[0].End == minutesPerWeek {
+		return true, time.Duration(minutesPerWeek) * time.Minute
 	}
 
-	// Currently closed
-	if len(oh.windows) == 1 && oh.windows[0].Start == 0 && oh.windows[0].End == minutesPerWeek {
-		return false, 0
-	}
-	openIdx := oh.findFirstWindowStartingAtOrAfter(min)
-	if openIdx < len(oh.windows) {
-		dur := time.Duration(oh.windows[openIdx].Start-min)*time.Minute - subMinute
+	min, subMinute := getWeekMinute(t)
+	idx := oh.findFirstWindowStartingAtOrAfter(min)
+	if idx < len(oh.windows) {
+		w := oh.windows[idx]
+		if w.Start <= min {
+			// Currently open
+			diffMin := w.End - min
+			if idx == len(oh.windows)-1 && w.End == minutesPerWeek && oh.windows[0].Start == 0 {
+				diffMin = (minutesPerWeek - min) + oh.windows[0].End
+			}
+			dur := time.Duration(diffMin)*time.Minute - subMinute
+			return true, dur
+		}
+		// Currently closed, opens at w.Start
+		dur := time.Duration(w.Start-min)*time.Minute - subMinute
 		return false, dur
 	}
+
+	// Currently closed, opens at windows[0].Start next week
 	dur := time.Duration((minutesPerWeek-min)+oh.windows[0].Start)*time.Minute - subMinute
 	return false, dur
 }
@@ -346,6 +343,31 @@ func (oh *OpeningHours) findWindowIndex(t int) int {
 	windows := oh.windows
 	n := len(windows)
 	if n == 0 {
+		return -1
+	}
+	if n <= 3 {
+		if t < windows[0].Start {
+			return -1
+		}
+		if t < windows[0].End {
+			return 0
+		}
+		if n > 1 {
+			if t < windows[1].Start {
+				return -1
+			}
+			if t < windows[1].End {
+				return 1
+			}
+			if n > 2 {
+				if t < windows[2].Start {
+					return -1
+				}
+				if t < windows[2].End {
+					return 2
+				}
+			}
+		}
 		return -1
 	}
 	_ = windows[n-1] // BCE
