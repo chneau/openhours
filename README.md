@@ -1,46 +1,57 @@
 # openhours
 
-A compromise of complexity of the ["opening_hours"](https://wiki.openstreetmap.org/wiki/Key:opening_hours).  
-Only the `day-day time-time" will work for now.
+A high-performance Go parser and evaluator for OpenStreetMap [`opening_hours`](https://wiki.openstreetmap.org/wiki/Key:opening_hours) specifications.
 
-## Online tools
+## Features
+
+- **Interval Math**: Bakes rules into disjoint week-minute time windows without bitset scanning.
+- **Fast Evaluation**: $O(\log N)$ point-in-time checks via binary search.
+- **Instance Interning**: Caches and shares identical schedules concurrently to minimize memory allocations.
+- **Overnight Shifts**: Supports shifts spanning across midnight (e.g. `Mo 22:00-04:00`, `Su 22:00-04:00`).
+- **Overrides & Exclusions**: Supports `off` / `closed` rules overriding previous rules (e.g. `Mo-Su 00:00-24:00; Tu 12:00-13:00 off`).
+- **Shortcuts & Open-Ended Intervals**: Supports `24/7`, open-ended (`Mo 10:00+`), day-only rules (`Mo-Fr`), and time-only rules (`10:00-12:00`).
+- **Duration Queries**: Find when an opening window long enough for a task of duration $D$ is available (`GetTimeToOpenForDuration` / `When`).
+- **JSON Support**: Native `json.Marshaler` and `json.Unmarshaler` implementations.
+
+## Online Tools
 
 <https://openingh.openstreetmap.de/evaluation_tool/?setLng=en>
 
-## Example
+## Examples
+
+### Modern API (`OpeningHours`)
 
 ```go
-oh := openhours.New("Mo-Fr 09:00-17:00")
-t := time.Date(2019, 3, 6, 10, 0, 0, 0, time.Now().Location())
-// oh.Location = t.Location() //default to system but can be changed this way
+package main
 
-fmt.Println("t =", t)
+import (
+	"fmt"
+	"time"
 
-isOpen := oh.Match(t)
-fmt.Println("Is it open at this date?", isOpen)
+	"github.com/chneau/openhours/v2"
+)
 
-_, duration := oh.NextDur(t)
-fmt.Println("For how long?", duration)
+func main() {
+	// Parse an OSM opening_hours expression
+	oh := openhours.Parse("Mo-Fr 08:00-12:00, 13:00-17:00; Sa 08:00-12:00")
 
-_, date := oh.NextDate(t)
-fmt.Println("When will it close?", date)
+	now := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC) // Monday 10:00 AM
 
-fmt.Println(" +++++++++++++++++++++ ")
+	// Check if open
+	fmt.Println("Is open:", oh.IsOpen(now)) // true
 
-t = time.Date(2019, 3, 6, 18, 0, 0, 0, time.Now().Location())
+	// Get current shift end
+	if end := oh.GetCurrentShiftEnd(now); end != nil {
+		fmt.Println("Current shift ends at:", *end) // 2026-05-18 12:00:00
+	}
 
-fmt.Println("t =", t)
+	// Time to next open
+	wait := oh.GetTimeToOpen(time.Date(2026, 5, 18, 12, 30, 0, 0, time.UTC))
+	fmt.Println("Opens in:", *wait) // 30m
 
-isOpen, date = oh.NextDate(t)
-fmt.Println("Is it open?", isOpen, "Ok, when will it open then ?", date)
-
-/* output
-t = 2019-03-06 10:00:00 +0000 GMT
-Is it open at this date? true
-For how long? 7h0m0s
-When will it close? 2019-03-06 17:00:00 +0000 GMT
- +++++++++++++++++++++
-t = 2019-03-06 18:00:00 +0000 GMT
-Is it open? false Ok, when will it open then ? 2019-03-07 09:00:00 +0000 GMT
-*/
+	// Find wait time for continuous duration (e.g. 3-hour job)
+	waitDur := oh.GetTimeToOpenForDuration(time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC), 3*time.Hour)
+	fmt.Println("Wait for 3h slot:", *waitDur) // 2h (opens at 13:00)
+}
 ```
+

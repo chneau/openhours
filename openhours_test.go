@@ -1,434 +1,441 @@
 package openhours
 
 import (
-	"reflect"
-	"runtime/debug"
-	"slices"
+	"encoding/json"
 	"testing"
 	"time"
 )
 
-var l *time.Location
+// ====================================================================
+// Tests for OpeningHours API
+// ====================================================================
 
-func init() {
-	var err error
-	l, err = time.LoadLocation("Europe/London") // is a good test example since i know when the two clock changes occur
-	if err != nil {
-		panic("could not load location")
-	}
-}
-
-func Test_cleanStr(t *testing.T) {
+func TestIsOpen(t *testing.T) {
 	tests := []struct {
-		name string
-		args string
-		want string
+		name       string
+		expression string
+		dateTime   time.Time
+		expected   bool
 	}{
-		{"capital letters", "Mo-Fr 10:00-12:00,12:30-16:00", "mo-fr 10:00-12:00,12:30-16:00"},
-		{"comma after space", "Mo-Fr 10:00-12:00, 12:30-16:00", "mo-fr 10:00-12:00,12:30-16:00"},
-		{"comma before space", "Mo-Fr 10:00-12:00 ,12:30-16:00", "mo-fr 10:00-12:00,12:30-16:00"},
-		{"comma before and after space", "Mo-Fr 10:00-12:00 , 12:30-16:00", "mo-fr 10:00-12:00,12:30-16:00"},
-		{"front space", " Mo-Fr 10:00-12:00,12:30-16:00", "mo-fr 10:00-12:00,12:30-16:00"},
-		{"trailing space", "Mo-Fr 10:00-12:00,12:30-16:00 ", "mo-fr 10:00-12:00,12:30-16:00"},
-		{"both spaces", " Mo-Fr 10:00-12:00,12:30-16:00 ", "mo-fr 10:00-12:00,12:30-16:00"},
-		{"mixed both spaces/tabs", " 	Mo-Fr 10:00-12:00,12:30-16:00	 ", "mo-fr 10:00-12:00,12:30-16:00"},
-		{"inner mixed spaces/tabs", " 	 	Mo-Fr 	 10:00-12:00,12:30-16:00 	 	 ", "mo-fr 10:00-12:00,12:30-16:00"},
+		// Basic daily range
+		{"Mo-Fr Monday 10am", "Mo-Fr 08:00-17:00", time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), true},
+		{"Mo-Fr Monday 7:59am", "Mo-Fr 08:00-17:00", time.Date(2026, 5, 18, 7, 59, 0, 0, time.UTC), false},
+		{"Mo-Fr Monday 5pm", "Mo-Fr 08:00-17:00", time.Date(2026, 5, 18, 17, 0, 0, 0, time.UTC), false},
+		{"Mo-Fr Saturday 10am", "Mo-Fr 08:00-17:00", time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC), false},
+
+		// Multiple time intervals
+		{"Mo-Fr lunch break 12:30pm", "Mo-Fr 08:00-12:00, 13:00-17:00", time.Date(2026, 5, 18, 12, 30, 0, 0, time.UTC), false},
+		{"Mo-Fr afternoon 2pm", "Mo-Fr 08:00-12:00, 13:00-17:00", time.Date(2026, 5, 18, 14, 0, 0, 0, time.UTC), true},
+
+		// Multiple rules
+		{"Multiple rules Sa 10am", "Mo-Fr 08:00-17:00; Sa 08:00-12:00", time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC), true},
+		{"Multiple rules Sa 2pm", "Mo-Fr 08:00-17:00; Sa 08:00-12:00", time.Date(2026, 5, 23, 14, 0, 0, 0, time.UTC), false},
+
+		// Off modifier (override)
+		{"Off modifier Tu 12:30pm", "Mo-Su 00:00-24:00; Tu 12:00-13:00 off", time.Date(2026, 5, 19, 12, 30, 0, 0, time.UTC), false},
+		{"Off modifier Tu 2pm", "Mo-Su 00:00-24:00; Tu 12:00-13:00 off", time.Date(2026, 5, 19, 14, 0, 0, 0, time.UTC), true},
+		{"Closed modifier Tu 12:30pm", "Mo-Su 00:00-24:00; Tu 12:00-13:00 closed", time.Date(2026, 5, 19, 12, 30, 0, 0, time.UTC), false},
+
+		// 24/7 shortcut
+		{"24/7 Sunday night", "24/7", time.Date(2026, 5, 24, 23, 59, 59, 0, time.UTC), true},
+
+		// Wrap around day range
+		{"Wrap around day range Sa-Su Sunday 10am", "Sa-Su 08:00-12:00", time.Date(2026, 5, 24, 10, 0, 0, 0, time.UTC), true},
+		{"Wrap around day range Sa-Su Monday 10am", "Sa-Su 08:00-12:00", time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), false},
+
+		// Open ended
+		{"Open ended Mo 10:00+ at 10pm", "Mo 10:00+", time.Date(2026, 5, 18, 22, 0, 0, 0, time.UTC), true},
+
+		// No days (assume every day)
+		{"No days 10:00-12:00 Mon 11am", "10:00-12:00", time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC), true},
+		{"No days 10:00-12:00 Sat 11am", "10:00-12:00", time.Date(2026, 5, 23, 11, 0, 0, 0, time.UTC), true},
+
+		// 00:00-24:00 (Every day, all day)
+		{"00:00-24:00 Mon midnight", "00:00-24:00", time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC), true},
+		{"00:00-24:00 Mon noon", "00:00-24:00", time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC), true},
+		{"00:00-24:00 Sun night", "00:00-24:00", time.Date(2026, 5, 24, 23, 59, 0, 0, time.UTC), true},
+
+		// Invalid Syntax & Fallback Tests
+		{"Invalid 'invalid'", "invalid", time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), false},
+		{"Invalid 'Mo invalid'", "Mo invalid", time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), false},
+		{"Invalid 'Mo 25:00-26:00'", "Mo 25:00-26:00", time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), false},
+		{"Invalid 'Xx 08:00-17:00'", "Xx 08:00-17:00", time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), false},
+		{"Empty ''", "", time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), false},
+		{"Spaces '   '", "   ", time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), false},
+
+		// Valid day selector without time range defaults to 24h on those days
+		{"Mo all day midnight", "Mo", time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC), true},
+		{"Mo all day noon", "Mo", time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC), true},
+		{"Mo all day 23:59", "Mo", time.Date(2026, 5, 18, 23, 59, 0, 0, time.UTC), true},
+		{"Mo all day Tue 10am", "Mo", time.Date(2026, 5, 19, 10, 0, 0, 0, time.UTC), false},
+		{"Mo-Fr Mon 10am", "Mo-Fr", time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), true},
+		{"Mo-Fr Sat 10am", "Mo-Fr", time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC), false},
+
+		// Overnight Shift Tests
+		// Mid-week overnight shift: Monday 22:00 to Tuesday 04:00
+		{"Mo 22:00-04:00 Mon 21:59", "Mo 22:00-04:00", time.Date(2026, 5, 18, 21, 59, 0, 0, time.UTC), false},
+		{"Mo 22:00-04:00 Mon 22:00", "Mo 22:00-04:00", time.Date(2026, 5, 18, 22, 0, 0, 0, time.UTC), true},
+		{"Mo 22:00-04:00 Mon 23:30", "Mo 22:00-04:00", time.Date(2026, 5, 18, 23, 30, 0, 0, time.UTC), true},
+		{"Mo 22:00-04:00 Tue 00:30", "Mo 22:00-04:00", time.Date(2026, 5, 19, 0, 30, 0, 0, time.UTC), true},
+		{"Mo 22:00-04:00 Tue 03:59", "Mo 22:00-04:00", time.Date(2026, 5, 19, 3, 59, 0, 0, time.UTC), true},
+		{"Mo 22:00-04:00 Tue 04:00", "Mo 22:00-04:00", time.Date(2026, 5, 19, 4, 0, 0, 0, time.UTC), false},
+
+		// Week wrap-around overnight shift: Sunday 22:00 to Monday 04:00
+		{"Su 22:00-04:00 Sun 21:59", "Su 22:00-04:00", time.Date(2026, 5, 24, 21, 59, 0, 0, time.UTC), false},
+		{"Su 22:00-04:00 Sun 22:00", "Su 22:00-04:00", time.Date(2026, 5, 24, 22, 0, 0, 0, time.UTC), true},
+		{"Su 22:00-04:00 Sun 23:59", "Su 22:00-04:00", time.Date(2026, 5, 24, 23, 59, 0, 0, time.UTC), true},
+		{"Su 22:00-04:00 Mon 00:01", "Su 22:00-04:00", time.Date(2026, 5, 18, 0, 1, 0, 0, time.UTC), true},
+		{"Su 22:00-04:00 Mon 03:59", "Su 22:00-04:00", time.Date(2026, 5, 18, 3, 59, 0, 0, time.UTC), true},
+		{"Su 22:00-04:00 Mon 04:00", "Su 22:00-04:00", time.Date(2026, 5, 18, 4, 0, 0, 0, time.UTC), false},
+
+		// Multi-day overnight shift
+		{"Mo-Fr 22:00-04:00 Mon 23:00", "Mo-Fr 22:00-04:00", time.Date(2026, 5, 18, 23, 0, 0, 0, time.UTC), true},
+		{"Mo-Fr 22:00-04:00 Tue 02:00", "Mo-Fr 22:00-04:00", time.Date(2026, 5, 19, 2, 0, 0, 0, time.UTC), true},
+		{"Mo-Fr 22:00-04:00 Fri 23:00", "Mo-Fr 22:00-04:00", time.Date(2026, 5, 22, 23, 0, 0, 0, time.UTC), true},
+		{"Mo-Fr 22:00-04:00 Sat 02:00", "Mo-Fr 22:00-04:00", time.Date(2026, 5, 23, 2, 0, 0, 0, time.UTC), true},
+		{"Mo-Fr 22:00-04:00 Sat 23:00", "Mo-Fr 22:00-04:00", time.Date(2026, 5, 23, 23, 0, 0, 0, time.UTC), false},
+		{"Mo-Fr 22:00-04:00 Sun 02:00", "Mo-Fr 22:00-04:00", time.Date(2026, 5, 24, 2, 0, 0, 0, time.UTC), false},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := cleanStr(tt.args); got != tt.want {
-				t.Errorf("cleanStr() = %v, want %v", got, tt.want)
+			oh := Parse(tt.expression)
+			got := oh.IsOpen(tt.dateTime)
+			if got != tt.expected {
+				t.Errorf("Parse(%q).IsOpen(%v) = %v, want %v", tt.expression, tt.dateTime, got, tt.expected)
+			}
+			if oh.Match(tt.dateTime) != tt.expected {
+				t.Errorf("Parse(%q).Match(%v) = %v, want %v", tt.expression, tt.dateTime, oh.Match(tt.dateTime), tt.expected)
 			}
 		})
 	}
 }
 
-func Test_simplifyDays(t *testing.T) {
+func TestGetCurrentShiftEnd(t *testing.T) {
 	tests := []struct {
-		name string
-		args string
-		want []int
+		name       string
+		expression string
+		dateTime   time.Time
+		expected   *time.Time
 	}{
-		{"weird range", "fr-mo", []int{Monday, Friday, Saturday, Sunday}},
-		{"simple", "mo", []int{Monday}},
-		{"double with error", "mo,mardi", []int{Monday}},
-		{"double with error", "mo,mardi", []int{Monday}},
-		{"double", "we,fr", []int{Wednesday, Friday}},
-		{"range", "we-fr", []int{Wednesday, Thursday, Friday}},
-		{"range with double", "mo,we-fr,su", []int{Monday, Wednesday, Thursday, Friday, Sunday}},
-		{"error -", "mo-pl", []int{}},
-		{"error ,", "pl,mo", []int{Monday}},
-		{"duplicate days", "mo-tu,tu,tu-fr,fr", []int{Monday, Tuesday, Wednesday, Thursday, Friday}},
+		{
+			"Mo-Fr 08:00-17:00 at 10am",
+			"Mo-Fr 08:00-17:00",
+			time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC),
+			timePtr(time.Date(2026, 5, 18, 17, 0, 0, 0, time.UTC)),
+		},
+		{
+			"Mo-Fr 08:00-17:00 at 17:30",
+			"Mo-Fr 08:00-17:00",
+			time.Date(2026, 5, 18, 17, 30, 0, 0, time.UTC),
+			nil,
+		},
+		{
+			"Mo 22:00-04:00 at Mon 23:00",
+			"Mo 22:00-04:00",
+			time.Date(2026, 5, 18, 23, 0, 0, 0, time.UTC),
+			timePtr(time.Date(2026, 5, 19, 4, 0, 0, 0, time.UTC)),
+		},
+		{
+			"Mo 22:00-04:00 at Tue 02:00",
+			"Mo 22:00-04:00",
+			time.Date(2026, 5, 19, 2, 0, 0, 0, time.UTC),
+			timePtr(time.Date(2026, 5, 19, 4, 0, 0, 0, time.UTC)),
+		},
+		{
+			"Su 22:00-04:00 at Sun 23:00",
+			"Su 22:00-04:00",
+			time.Date(2026, 5, 24, 23, 0, 0, 0, time.UTC),
+			timePtr(time.Date(2026, 5, 25, 4, 0, 0, 0, time.UTC)),
+		},
+		{
+			"Su 22:00-04:00 at Mon 02:00",
+			"Su 22:00-04:00",
+			time.Date(2026, 5, 18, 2, 0, 0, 0, time.UTC),
+			timePtr(time.Date(2026, 5, 18, 4, 0, 0, 0, time.UTC)),
+		},
+		{
+			"24/7 at 10am -> null",
+			"24/7",
+			time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC),
+			nil,
+		},
+		{
+			"empty at 10am -> null",
+			"",
+			time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC),
+			nil,
+		},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := simplifyDays(tt.args); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("simplifyDays() = %v, want %v", got, tt.want)
+			oh := Parse(tt.expression)
+			got := oh.GetCurrentShiftEnd(tt.dateTime)
+			if (got == nil && tt.expected != nil) || (got != nil && tt.expected == nil) {
+				t.Errorf("Parse(%q).GetCurrentShiftEnd(%v) = %v, want %v", tt.expression, tt.dateTime, got, tt.expected)
+			} else if got != nil && tt.expected != nil && !got.Equal(*tt.expected) {
+				t.Errorf("Parse(%q).GetCurrentShiftEnd(%v) = %v, want %v", tt.expression, tt.dateTime, *got, *tt.expected)
 			}
 		})
 	}
 }
 
-func Test_simplifyHour(t *testing.T) {
+func TestGetTimeToOpen(t *testing.T) {
 	tests := []struct {
-		args  string
-		want  int
-		want1 int
-		want2 int
+		name       string
+		expression string
+		dateTime   time.Time
+		expected   *time.Duration
 	}{
-		{"00:00", 0, 0, 0},
-		{"00:00:00", 0, 0, 0},
-		{"00:00:05", 0, 0, 5},
-		{"10:30", 10, 30, 0},
-		{"09:05", 9, 5, 0},
-		{"24:00", 24, 0, 0},
-		{"00:-10", 0, 0, 0},
-		{"24:01", 0, 0, 0},
-		{"-50:99", 0, 0, 0},
-		{"33:33:33", 9, 33, 33}, // allow for 25:00:00 to be 1:00:00
-		{"33:61:33", 0, 0, 0},
-	}
-	for _, tt := range tests {
-		t.Run(tt.args, func(t *testing.T) {
-			got, got1, got2 := simplifyTime(tt.args)
-			if got != tt.want {
-				t.Errorf("simplifyHour(%s) got = %v, want %v", tt.args, got, tt.want)
-			}
-			if got1 != tt.want1 {
-				t.Errorf("simplifyHour(%s) got1 = %v, want %v", tt.args, got1, tt.want1)
-			}
-			if got2 != tt.want2 {
-				t.Errorf("simplifyHour(%s) got2 = %v, want %v", tt.args, got2, tt.want2)
-			}
-		})
-	}
-}
+		// Monday 8am to next Monday 8am (6 day wait)
+		{"Mo 08:00-16:00 from Tue 8am", "Mo 08:00-16:00", time.Date(2026, 5, 19, 8, 0, 0, 0, time.UTC), durPtr(6 * 24 * time.Hour)},
 
-func Test_feature_simple(t *testing.T) {
-	o, err := New("mo 08:00-18:00", l)
-	if err != nil {
-		t.Error(err)
+		// Already open
+		{"10:00-12:00 from Mon 11am", "10:00-12:00", time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC), durPtr(0)},
+
+		// Opens later today
+		{"10:00-12:00 from Mon 9am", "10:00-12:00", time.Date(2026, 5, 18, 9, 0, 0, 0, time.UTC), durPtr(time.Hour)},
+
+		// Opens tomorrow
+		{"Mo 10:00-12:00 from Sun 10am", "Mo 10:00-12:00", time.Date(2026, 5, 17, 10, 0, 0, 0, time.UTC), durPtr(24 * time.Hour)},
+
+		// Multiple ranges
+		{"08:00-10:00, 14:00-16:00 from 11am", "08:00-10:00, 14:00-16:00", time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC), durPtr(3 * time.Hour)},
+
+		// Null case: Never opens
+		{"empty string", "", time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), nil},
 	}
-	tests := []struct {
-		name string
-		args time.Time
-		want bool
-	}{
-		{"before", newDate(Monday, 7, 0, 0, 0, l), false},
-		{"start", newDate(Monday, 8, 0, 0, 0, l), true}, // special case start = true
-		{"during", newDate(Monday, 17, 59, 0, 0, l), true},
-		{"end", newDate(Monday, 18, 0, 0, 0, l), false}, // special case end = false
-		{"after", newDate(Monday, 19, 0, 0, 0, l), false},
-	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := o.Match(tt.args); got != tt.want {
-				t.Errorf("simplifyHour() got = %v, want %v", got, tt.want)
+			oh := Parse(tt.expression)
+			got := oh.GetTimeToOpen(tt.dateTime)
+			if (got == nil && tt.expected != nil) || (got != nil && tt.expected == nil) {
+				t.Errorf("Parse(%q).GetTimeToOpen(%v) = %v, want %v", tt.expression, tt.dateTime, got, tt.expected)
+			} else if got != nil && tt.expected != nil && *got != *tt.expected {
+				t.Errorf("Parse(%q).GetTimeToOpen(%v) = %v, want %v", tt.expression, tt.dateTime, *got, *tt.expected)
 			}
 		})
 	}
 }
 
-func Test_feature_two(t *testing.T) {
-	o, err := New("mo 08:00-12:00,13:00-17:00", l)
-	if err != nil {
-		t.Error(err)
-	}
-	tests := []struct {
-		args time.Time
-		want bool
-	}{
-		{newDate(Monday, 8, 0, 0, 0, l), true}, // special case start = true
-		{newDate(Monday, 9, 0, 0, 0, l), true},
-		{newDate(Monday, 13, 0, 0, 0, l), true}, // special case start = true
-		{newDate(Monday, 15, 0, 0, 0, l), true},
-		{newDate(Monday, 12, 30, 0, 0, l), false}, // between
-		{newDate(Monday, 17, 59, 0, 0, l), false},
-		{newDate(Monday, 17, 0, 0, 0, l), false}, // special case end = false
-		{newDate(Monday, 12, 0, 0, 0, l), false}, // special case end = false
-		{newDate(Monday, 7, 0, 0, 0, l), false},
-		{newDate(Monday, 19, 0, 0, 0, l), false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.args.String(), func(t *testing.T) {
-			if got := o.Match(tt.args); got != tt.want {
-				t.Errorf("simplifyHour() got = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
+func TestGetTimeToOpenForDuration(t *testing.T) {
+	lunchBreakExpr := "Mo-Fr 08:00-12:00, 13:00-17:00"
+	weekendExpr := "Mo-Fr 08:00-17:00; Sa 08:00-12:00"
+	exclusionExpr := "Mo-Su 00:00-24:00; Tu 12:00-13:00 off"
 
-func TestOpenHours_NextDur(t *testing.T) {
-	o, err := New("mo 08:00-18:00", l)
-	if err != nil {
-		t.Error(err)
-	}
 	tests := []struct {
-		name  string
-		args  time.Time
-		want  bool
-		want1 time.Duration
+		name       string
+		expression string
+		dateTime   time.Time
+		duration   time.Duration
+		expected   *time.Duration
 	}{
-		{"1 hour before start", newDate(Monday, 7, 0, 0, 0, l), false, time.Hour},
-		{"at start", newDate(Monday, 8, 0, 0, 0, l), true, 10 * time.Hour},
-		{"1 hour after start", newDate(Monday, 9, 0, 0, 0, l), true, 9 * time.Hour},
-		{"1 hour before end", newDate(Monday, 17, 0, 0, 0, l), true, time.Hour},
-		{"at end", newDate(Monday, 18, 0, 0, 0, l), false, time.Hour*24*7 - time.Hour*10},
-		{"1 day after start (closed)", newDate(Tuesday, 8, 0, 0, 0, l), false, time.Hour * 24 * 6},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, got1 := o.NextDur(tt.args)
-			if got != tt.want {
-				t.Errorf("OpenHours.NextDur() got = %v, want %v", got, tt.want)
-			}
-			if got1 != tt.want1 {
-				t.Errorf("OpenHours.NextDur() got1 = %v, want %v", got1, tt.want1)
-			}
-		})
-	}
-}
+		// Monday 8am, opens 10-12, ask for 1h -> Wait 2h (until 10am)
+		{"10:00-12:00 from 8am for 1h", "10:00-12:00", time.Date(2026, 5, 18, 8, 0, 0, 0, time.UTC), time.Hour, durPtr(2 * time.Hour)},
 
-func TestOpenHours_Special_NextDur(t *testing.T) {
-	o, err := New("su 03:00-05:00", l)
-	if err != nil {
-		t.Error(err)
+		// Monday 11am, opens 10-12, ask for 2h -> Current window too short (only 1h left), Wait 23h (until Tuesday 10am)
+		{"10:00-12:00 from 11am for 2h", "10:00-12:00", time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC), 2 * time.Hour, durPtr(23 * time.Hour)},
+
+		// Already open and fits
+		{"10:00-14:00 from 11am for 2h", "10:00-14:00", time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC), 2 * time.Hour, durPtr(0)},
+
+		// Multiple slots, first too short: 7am to 2pm
+		{"08:00-09:00, 14:00-17:00 from 7am for 2h", "08:00-09:00, 14:00-17:00", time.Date(2026, 5, 18, 7, 0, 0, 0, time.UTC), 2 * time.Hour, durPtr(7 * time.Hour)},
+
+		// Wrap-around loop optimization fix test case:
+		// Tu 08-09 (1h), We 08-10 (2h), Th 08-20 (12h). Query at Tue 10:00 for 10h duration.
+		// Needs to skip Tu 08-09 (passed) and We 08-10 (too short) and find Th 08-20.
+		{"Tu 08-09; We 08-10; Th 08-20 from Tue 10am for 10h", "Tu 08:00-09:00; We 08:00-10:00; Th 08:00-20:00", time.Date(2026, 5, 19, 10, 0, 0, 0, time.UTC), 10 * time.Hour, durPtr(46 * time.Hour)},
+
+		// Overnight shift duration test
+		{"Su 22:00-04:00 from Sun 9pm for 5h", "Su 22:00-04:00", time.Date(2026, 5, 24, 21, 0, 0, 0, time.UTC), 5 * time.Hour, durPtr(time.Hour)},
+
+		// Complex Case: Lunch Breaks
+		// Ask for 2h at 10am (Fits in morning)
+		{"Lunch breaks 10am for 2h", lunchBreakExpr, time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), 2 * time.Hour, durPtr(0)},
+		// Ask for 3h at 11am (Does NOT fit in morning, must wait until 1pm)
+		{"Lunch breaks 11am for 3h", lunchBreakExpr, time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC), 3 * time.Hour, durPtr(2 * time.Hour)},
+		// Ask for 5h (Never fits in any single slot)
+		{"Lunch breaks 9am for 5h", lunchBreakExpr, time.Date(2026, 5, 18, 9, 0, 0, 0, time.UTC), 5 * time.Hour, nil},
+
+		// Complex Case: Weekend Overrides
+		// Friday 4pm, ask for 4h (Only 1h left today, tomorrow only 4h) -> Wait until Sat 8am (wait 16h)
+		{"Weekend overrides Fri 4pm for 4h", weekendExpr, time.Date(2026, 5, 22, 16, 0, 0, 0, time.UTC), 4 * time.Hour, durPtr(16 * time.Hour)},
+		// Friday 4pm, ask for 6h (Doesn't fit Sat, wait until Mon 8am) -> Wait 64h
+		{"Weekend overrides Fri 4pm for 6h", weekendExpr, time.Date(2026, 5, 22, 16, 0, 0, 0, time.UTC), 6 * time.Hour, durPtr(64 * time.Hour)},
+
+		// Complex Case: Exclusions
+		// Tuesday 11:30am, ask for 1h (Only 30m left before 'off') -> Wait until 1pm (Wait 1.5h)
+		{"Exclusions Tue 11:30am for 1h", exclusionExpr, time.Date(2026, 5, 19, 11, 30, 0, 0, time.UTC), time.Hour, durPtr(90 * time.Minute)},
+		// Tuesday 11:30am, ask for 24h -> Next 24h continuous slot starts Tue 13:00 (Wait 1.5h)
+		{"Exclusions Tue 11:30am for 24h", exclusionExpr, time.Date(2026, 5, 19, 11, 30, 0, 0, time.UTC), 24 * time.Hour, durPtr(90 * time.Minute)},
+
+		// Null case: Never opens or duration exceeds slot
+		{"10:00-11:00 for 5h", "10:00-11:00", time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), 5 * time.Hour, nil},
 	}
-	tests := []struct {
-		name  string
-		args  time.Time
-		want  bool
-		want1 time.Duration
-	}{
-		{"2 h before (3 if there was no clock change)", newDate(Sunday, 1, 0, 0, 0, l), false, time.Hour * 2},
-		{"4 h before (3 if there was no clock change)", newDate(Saturday, 23, 0, 0, 0, l), false, time.Hour * 4},
-	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, got1 := o.NextDur(tt.args)
-			if got != tt.want {
-				t.Errorf("OpenHours.NextDur() got = %v, want %v have %v", got, tt.want, o)
-			}
-			if got1 != tt.want1 {
-				t.Errorf("OpenHours.NextDur() got1 = %v, want %v have %v", got1, tt.want1, o)
+			oh := Parse(tt.expression)
+			got := oh.GetTimeToOpenForDuration(tt.dateTime, tt.duration)
+			if (got == nil && tt.expected != nil) || (got != nil && tt.expected == nil) {
+				t.Errorf("Parse(%q).GetTimeToOpenForDuration(%v, %v) = %v, want %v", tt.expression, tt.dateTime, tt.duration, got, tt.expected)
+			} else if got != nil && tt.expected != nil && *got != *tt.expected {
+				t.Errorf("Parse(%q).GetTimeToOpenForDuration(%v, %v) = %v, want %v", tt.expression, tt.dateTime, tt.duration, *got, *tt.expected)
 			}
 		})
 	}
 }
 
-func TestNew(t *testing.T) {
-	tests := []struct {
-		name  string
-		args  string
-		args2 *time.Location
-		want  OpenHours
-	}{
-		{"empty", "", l, []time.Time{newDate(Monday, 0, 0, 0, 0, l), newDate(Sunday, 24, 0, 0, 0, l)}},
-		{"empty ;", ";", l, []time.Time{newDate(Monday, 0, 0, 0, 0, l), newDate(Sunday, 24, 0, 0, 0, l)}},
-		{"all day ;", "su-sa 00:00-24:00;", l, []time.Time{newDate(Monday, 0, 0, 0, 0, l), newDate(Sunday, 24, 0, 0, 0, l)}},
-		{"empty and no tz", "", nil, []time.Time{newDate(Monday, 0, 0, 0, 0, time.UTC), newDate(Sunday, 24, 0, 0, 0, time.UTC)}},
-		{"order on same sentence", "mo,tu 10:00-11:00", nil, NewMust("tu,mo 10:00-11:00", nil)},
-		{"order on different sentences", "mo 10:00-11:00;tu 10:00-12:00", nil, NewMust("tu 10:00-12:00;mo 10:00-11:00", nil)},
-		{"complex = simple", "su-sa 00:00-12:00,12:00-24:00", l, NewMust("", l)},
-		{"complex = simple", "su-sa 00:00-12:00;su-sa 12:00-24:00", l, NewMust("", l)},
-		{"time windows order does not matter anymore", "mo-su 00:00-24:00", l, NewMust("", l)},
-		{"one day", "mo 10:00-15:00", l, []time.Time{newDate(Monday, 10, 0, 0, 0, l), newDate(Monday, 15, 0, 0, 0, l)}},
-		{"two days", "mo 10:00-15:00;fr 08:00-14:00", l, []time.Time{newDate(Monday, 10, 0, 0, 0, l), newDate(Monday, 15, 0, 0, 0, l), newDate(Friday, 8, 0, 0, 0, l), newDate(Friday, 14, 0, 0, 0, l)}},
-		{"week with break", "Tu-Th 10:30-13:00,14:00-24:00", l, []time.Time{
-			newDate(Tuesday, 10, 30, 0, 0, l), newDate(Tuesday, 13, 0, 0, 0, l),
-			newDate(Tuesday, 14, 0, 0, 0, l), newDate(Tuesday, 24, 0, 0, 0, l),
-			newDate(Wednesday, 10, 30, 0, 0, l), newDate(Wednesday, 13, 0, 0, 0, l),
-			newDate(Wednesday, 14, 0, 0, 0, l), newDate(Wednesday, 24, 0, 0, 0, l),
-			newDate(Thursday, 10, 30, 0, 0, l), newDate(Thursday, 13, 0, 0, 0, l),
-			newDate(Thursday, 14, 0, 0, 0, l), newDate(Thursday, 24, 0, 0, 0, l),
-		}},
-		{"", "Mo-Sa 10:00-21:00; Su 12:00-19:00", l, []time.Time{
-			newDate(Monday, 10, 0, 0, 0, l), newDate(Monday, 21, 0, 0, 0, l),
-			newDate(Tuesday, 10, 0, 0, 0, l), newDate(Tuesday, 21, 0, 0, 0, l),
-			newDate(Wednesday, 10, 0, 0, 0, l), newDate(Wednesday, 21, 0, 0, 0, l),
-			newDate(Thursday, 10, 0, 0, 0, l), newDate(Thursday, 21, 0, 0, 0, l),
-			newDate(Friday, 10, 0, 0, 0, l), newDate(Friday, 21, 0, 0, 0, l),
-			newDate(Saturday, 10, 0, 0, 0, l), newDate(Saturday, 21, 0, 0, 0, l),
-			newDate(Sunday, 12, 0, 0, 0, l), newDate(Sunday, 19, 0, 0, 0, l),
-		}},
+func TestWhen(t *testing.T) {
+	oh := Parse("Mo 10:00-15:00")
+	now := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)
+	when := oh.When(now, 4*time.Hour)
+	if when == nil || !when.Equal(now) {
+		t.Errorf("When expected %v, got %v", now, when)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := New(tt.args, tt.args2)
+
+	// Request 10h duration (impossible in a 5h slot)
+	whenNone := oh.When(now, 10*time.Hour)
+	if whenNone != nil {
+		t.Errorf("When expected nil, got %v", whenNone)
+	}
+}
+
+func TestNextDurAndNextDate(t *testing.T) {
+	oh := Parse("Mo 08:00-18:00")
+	tBefore := time.Date(2026, 5, 18, 7, 0, 0, 0, time.UTC)
+	isOpen, dur := oh.NextDur(tBefore)
+	if isOpen || dur != time.Hour {
+		t.Errorf("NextDur before open: got isOpen=%v, dur=%v; want false, 1h", isOpen, dur)
+	}
+	isOpen, nextDate := oh.NextDate(tBefore)
+	expectedOpenTime := time.Date(2026, 5, 18, 8, 0, 0, 0, time.UTC)
+	if isOpen || !nextDate.Equal(expectedOpenTime) {
+		t.Errorf("NextDate before open: got isOpen=%v, date=%v; want false, %v", isOpen, nextDate, expectedOpenTime)
+	}
+
+	tInside := time.Date(2026, 5, 18, 9, 0, 0, 0, time.UTC)
+	isOpen, dur = oh.NextDur(tInside)
+	if !isOpen || dur != 9*time.Hour {
+		t.Errorf("NextDur during open: got isOpen=%v, dur=%v; want true, 9h", isOpen, dur)
+	}
+}
+
+func TestJSONSerialization(t *testing.T) {
+	expressions := []string{
+		"Mo-Fr 08:00-17:00",
+		"24/7",
+		"Mo-Su 00:00-24:00; Tu 12:00-13:00 off",
+	}
+
+	for _, expr := range expressions {
+		t.Run(expr, func(t *testing.T) {
+			orig := Parse(expr)
+			data, err := json.Marshal(orig)
 			if err != nil {
-				t.Error(err)
+				t.Fatalf("json.Marshal failed: %v", err)
 			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("New() = %v, want %v", got, tt.want)
+			expectedJSON := `"` + expr + `"`
+			if string(data) != expectedJSON {
+				t.Errorf("json.Marshal = %s, want %s", string(data), expectedJSON)
+			}
+
+			var deserialized *OpeningHours
+			if err := json.Unmarshal(data, &deserialized); err != nil {
+				t.Fatalf("json.Unmarshal failed: %v", err)
+			}
+			if deserialized.Raw() != expr {
+				t.Errorf("deserialized.Raw() = %q, want %q", deserialized.Raw(), expr)
 			}
 		})
 	}
 }
 
-func TestOpenHours_NextDate(t *testing.T) {
-	o, err := New("su 03:00-05:00", l)
-	if err != nil {
-		t.Error(err)
+func TestWindows(t *testing.T) {
+	oh := Parse("Mo 08:00-12:00")
+	windows := oh.Windows()
+	if len(windows) != 1 {
+		t.Fatalf("expected 1 window, got %d", len(windows))
 	}
-	tests := []struct {
-		name  string
-		args  time.Time
-		want  bool
-		want1 time.Time
-	}{
-		{"2 h before (3 if there was no clock change)", newDate(Sunday, 1, 0, 0, 0, l), false, newDate(Sunday, 3, 0, 0, 0, l)},
-		{"4 h before (3 if there was no clock change)", newDate(Saturday, 23, 0, 0, 0, l), false, newDate(Sunday, 3, 0, 0, 0, l)},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, got1 := o.NextDate(tt.args)
-			if got != tt.want {
-				t.Errorf("OpenHours.NextDate() got = %v, want %v", got, tt.want)
-			}
-			if got1 != tt.want1 {
-				t.Errorf("OpenHours.NextDate() got1 = %v, want %v", got1, tt.want1)
-			}
-		})
+	if windows[0].Start != 8*60 || windows[0].End != 12*60 {
+		t.Errorf("unexpected window: %+v", windows[0])
 	}
 }
 
-func pDate(day, hour, min, sec, nsec int, loc *time.Location) *time.Time {
-	t := newDate(day, hour, min, sec, nsec, loc)
+func timePtr(t time.Time) *time.Time {
 	return &t
 }
 
-func TestOpenHours_When(t *testing.T) {
-	type args struct {
-		t time.Time
-		d time.Duration
-	}
-	tests := []struct {
-		name string
-		o    OpenHours
-		args args
-		want *time.Time
-	}{
-		{"at start of open and have time", NewMust("mo 10:00-15:00", l), args{newDate(Monday, 11, 0, 0, 0, l), time.Hour * 4}, pDate(1, 11, 0, 0, 0, l)},
-		{"before start of open and have time", NewMust("mo 10:00-15:00", l), args{newDate(Monday, 9, 0, 0, 0, l), time.Hour * 4}, pDate(1, 10, 0, 0, 0, l)},
-		{"at end of open and have time", NewMust("mo 10:00-15:00", l), args{newDate(Monday, 15, 0, 0, 0, l), time.Hour * 4}, pDate(8, 10, 0, 0, 0, l)},
-		{"after end of open and have time", NewMust("mo 10:00-15:00", l), args{newDate(Monday, 16, 0, 0, 0, l), time.Hour * 4}, pDate(8, 10, 0, 0, 0, l)},
-		{"between open and have time", NewMust("mo 10:00-15:00", l), args{newDate(Tuesday, 11, 0, 0, 0, l), time.Hour * 4}, pDate(8, 10, 0, 0, 0, l)},
-		{"between open and no time", NewMust("mo 10:00-15:00", l), args{newDate(Monday, 14, 0, 0, 0, l), time.Hour * 4}, pDate(8, 10, 0, 0, 0, l)},
-		{"no time", NewMust("mo 10:00-11:00", l), args{newDate(Monday, 14, 0, 0, 0, l), time.Hour * 4}, nil},
-		{"at start of open and have time +fri", NewMust("mo 10:00-15:00;fr 08:00-14:00", l), args{newDate(Monday, 10, 0, 0, 0, l), time.Hour * 4}, pDate(1, 10, 0, 0, 0, l)},
-		{"before start of open and have time +fri", NewMust("mo 10:00-15:00;fr 08:00-14:00", l), args{newDate(Monday, 9, 0, 0, 0, l), time.Hour * 4}, pDate(1, 10, 0, 0, 0, l)},
-		{"at end of open and have time +fri", NewMust("mo 10:00-15:00;fr 08:00-14:00", l), args{newDate(Monday, 15, 0, 0, 0, l), time.Hour * 4}, pDate(5, 8, 0, 0, 0, l)},
-		{"after end of open and have time +fri", NewMust("mo 10:00-15:00;fr 08:00-14:00", l), args{newDate(Monday, 16, 0, 0, 0, l), time.Hour * 4}, pDate(5, 8, 0, 0, 0, l)},
-		{"between open and have time +fri", NewMust("mo 10:00-15:00;fr 08:00-14:00", l), args{newDate(Monday, 11, 0, 0, 0, l), time.Hour * 4}, pDate(1, 11, 0, 0, 0, l)},
-		{"between open and no time +fri", NewMust("mo 10:00-15:00;fr 08:00-14:00", l), args{newDate(Monday, 14, 0, 0, 0, l), time.Hour * 4}, pDate(5, 8, 0, 0, 0, l)},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.o.When(tt.args.t, tt.args.d); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("OpenHours.When() = %v, want %v", got, tt.want)
-			}
-		})
-	}
+func durPtr(d time.Duration) *time.Duration {
+	return &d
 }
 
-func TestOpenHours_Add(t *testing.T) {
-	type args struct {
-		t time.Time
-		d time.Duration
-	}
-	tests := []struct {
-		name string
-		o    OpenHours
-		args args
-		want *time.Time
-	}{
-		{
-			"at start of open and have time",
-			OpenHours{}.Add(newDate(11, 10, 0, 0, 0, l), newDate(11, 10, 30, 0, 0, l)), // mo 10:00-10:30
-			args{newDate(11, 9, 0, 0, 0, l), time.Second},
-			pDate(11, 10, 0, 0, 0, l),
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.o.When(tt.args.t, tt.args.d); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("OpenHours.When() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
+// ====================================================================
+// Benchmarks
+// ====================================================================
 
-func TestOpenHours_Bugs(t *testing.T) {
-	o, err := New("mo-su 07:00-19:00", time.UTC)
-	if err != nil {
-		t.Error(err)
-	}
-	when := o.When(newDate(Sunday, 9, 0, 0, 0, time.UTC), time.Hour)
-	want := newDate(Sunday, 9, 0, 0, 0, time.UTC)
-	if when == nil || !want.Equal(*when) {
-		t.Errorf("OpenHours.When() = %v, want %v", when, want)
-	}
-}
-
-func TestOpenHours_InvalidPanic(t *testing.T) {
-	defer func() {
-		if r := recover(); r != nil {
-			t.Log(string(debug.Stack()))
-			t.Errorf("OpenHours did panic: %v", r)
+func BenchmarkParse_Uncached(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		rules := []openingRule{
+			parseOpeningRule("mo-fr 08:00-12:00, 13:00-17:00"),
+			parseOpeningRule("sa 08:00-12:00"),
 		}
-	}()
-	_, err := New("mo 10:00", nil)
-	if err != ErrInvalidFormat {
-		t.Error(err)
+		_ = bakeRules(rules)
 	}
 }
 
-func TestOpenHours_String(t *testing.T) {
-	tests := []struct {
-		name string
-		o    OpenHours
-		want []string
-	}{
-		{"empty", OpenHours{}, []string{}},
-		{"simple", NewMust("mo 10:00-15:00", l), []string{"Monday 10:00 - 15:00"}},
-		{"two", NewMust("mo 10:00-15:00;fr 08:00-14:00", l), []string{"Monday 10:00 - 15:00", "Friday 08:00 - 14:00"}},
-		{"full week", NewMust("mo-su 09:00-17:00", l), []string{"Monday 09:00 - 17:00", "Tuesday 09:00 - 17:00", "Wednesday 09:00 - 17:00", "Thursday 09:00 - 17:00", "Friday 09:00 - 17:00", "Saturday 09:00 - 17:00", "Sunday 09:00 - 17:00"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.o.String(); !slices.Equal(got, tt.want) {
-				t.Errorf("OpenHours.String() = %v, want %v", got, tt.want)
-			}
-		})
+func BenchmarkParse_Interned(b *testing.B) {
+	expr := "mo-fr 08:00-12:00, 13:00-17:00; sa 08:00-12:00"
+	_ = Parse(expr)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = Parse(expr)
 	}
 }
 
-func TestOpenHours_ClosingAfterMidnight(t *testing.T) {
-	o1 := NewMust("mo 22:00-02:00", l)
-	o2 := NewMust("mo 22:00-26:00", l)
-	tests := []struct {
-		o    OpenHours
-		name string
-		now  time.Time
-		want bool
-	}{
-		{o1, "1before", newDate(Monday, 21, 0, 0, 0, l), false},
-		{o1, "1start", newDate(Monday, 22, 0, 0, 0, l), true},
-		{o1, "1between", newDate(Monday, 23, 0, 0, 0, l), true},
-		{o1, "1end", newDate(Tuesday, 2, 0, 0, 0, l), false},
-		{o1, "1after", newDate(Tuesday, 3, 0, 0, 0, l), false},
-		// using the 26:00 = 02:00 next day notation
-		{o2, "2before", newDate(Monday, 21, 0, 0, 0, l), false},
-		{o2, "2start", newDate(Monday, 22, 0, 0, 0, l), true},
-		{o2, "2between", newDate(Monday, 23, 0, 0, 0, l), true},
-		{o2, "2end", newDate(Tuesday, 2, 0, 0, 0, l), false},
-		{o2, "2after", newDate(Tuesday, 3, 0, 0, 0, l), false},
+func BenchmarkIsOpen(b *testing.B) {
+	oh := Parse("mo-fr 08:00-12:00, 13:00-17:00; sa 08:00-12:00")
+	t := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = oh.IsOpen(t)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got, got1 := tt.o.NextDur(tt.now); got != tt.want {
-				t.Errorf("OpenHours.NextDur().Open = %v, want %v, duration: %v", got, tt.want, got1)
-			}
-		})
+}
+
+func BenchmarkWhen(b *testing.B) {
+	oh := Parse("mo-fr 08:00-12:00, 13:00-17:00; sa 08:00-12:00")
+	t := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)
+	dur := 3 * time.Hour
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = oh.When(t, dur)
+	}
+}
+
+func BenchmarkGetTimeToOpenForDuration(b *testing.B) {
+	oh := Parse("mo-fr 08:00-12:00, 13:00-17:00; sa 08:00-12:00")
+	t := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)
+	dur := 3 * time.Hour
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = oh.GetTimeToOpenForDuration(t, dur)
+	}
+}
+
+func BenchmarkNextDur(b *testing.B) {
+	oh := Parse("mo-fr 08:00-12:00, 13:00-17:00; sa 08:00-12:00")
+	t := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = oh.NextDur(t)
 	}
 }
