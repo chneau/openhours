@@ -294,11 +294,12 @@ func (oh *OpeningHours) NextDate(t time.Time) (bool, time.Time) {
 }
 
 func (oh *OpeningHours) findWindowIndex(t int) int {
+	windows := oh.windows
 	low := 0
-	high := len(oh.windows) - 1
+	high := len(windows) - 1
 	for low <= high {
 		mid := int(uint(low+high) >> 1)
-		w := oh.windows[mid]
+		w := &windows[mid]
 		if t >= w.Start && t < w.End {
 			return mid
 		}
@@ -312,12 +313,13 @@ func (oh *OpeningHours) findWindowIndex(t int) int {
 }
 
 func (oh *OpeningHours) findFirstWindowStartingAtOrAfter(t int) int {
+	windows := oh.windows
 	low := 0
-	high := len(oh.windows) - 1
-	result := len(oh.windows)
+	high := len(windows) - 1
+	result := len(windows)
 	for low <= high {
 		mid := int(uint(low+high) >> 1)
-		if oh.windows[mid].End > t {
+		if windows[mid].End > t {
 			result = mid
 			high = mid - 1
 		} else {
