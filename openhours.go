@@ -85,6 +85,9 @@ func Parse(expression string) *OpeningHours {
 
 	slot := l1Cache.Load()
 	if slot != nil {
+		if unsafe.StringData(slot.expr) == unsafe.StringData(expression) && len(slot.expr) == len(expression) {
+			return slot.oh
+		}
 		if slot.expr == expression {
 			return slot.oh
 		}
@@ -221,11 +224,15 @@ func (oh *OpeningHours) IsOpen(t time.Time) bool {
 			weekMin += minutesPerWeek
 		}
 	} else {
-		hour, min, _ := t.Clock()
-		day := weekdayToDayIdx[t.Weekday()]
-		weekMin = day*1440 + hour*60 + min
+		weekMin = timeToWeekMinuteNonUTC(t)
 	}
 	return (oh.bitmask[uint(weekMin)>>6] & (uint64(1) << (uint(weekMin) & 63))) != 0
+}
+
+func timeToWeekMinuteNonUTC(t time.Time) int {
+	hour, min, _ := t.Clock()
+	day := weekdayToDayIdx[t.Weekday()]
+	return day*1440 + hour*60 + min
 }
 
 // Match returns true if the time t is within opening hours.
@@ -496,10 +503,10 @@ func (oh *OpeningHours) findWindowIndex(t int) int {
 func (oh *OpeningHours) findFirstWindowStartingAtOrAfter(t int) int {
 	windows := oh.windows
 	n := len(windows)
-	if n == 0 {
-		return 0
-	}
 	if n <= 4 {
+		if n == 0 {
+			return 0
+		}
 		if windows[0].End > t {
 			return 0
 		}
@@ -511,10 +518,8 @@ func (oh *OpeningHours) findFirstWindowStartingAtOrAfter(t int) int {
 				if windows[2].End > t {
 					return 2
 				}
-				if n > 3 {
-					if windows[3].End > t {
-						return 3
-					}
+				if n > 3 && windows[3].End > t {
+					return 3
 				}
 			}
 		}
@@ -528,6 +533,9 @@ func (oh *OpeningHours) findFirstWindowStartingAtOrAfter(t int) int {
 		mid := int(uint(low+high) >> 1)
 		if windows[mid].End > t {
 			result = mid
+			if mid == 0 {
+				break
+			}
 			high = mid - 1
 		} else {
 			low = mid + 1

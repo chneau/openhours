@@ -578,10 +578,17 @@ func TestRunCSBenchmarkComparison(t *testing.T) {
 	dur2 := time.Since(t0)
 	fmt.Printf("2. IsOpen (1M pure calls):                 %4d ms (%.3f us/op)\n", dur2.Milliseconds(), float64(dur2.Nanoseconds())/float64(1_000_000*benchScale)/1000.0)
 
+	// Precalculate the 168-hour timeline once up-front so that Go's time.Add cost
+	// is not measured inside the query benchmarks (matching timeline 1 above).
+	hourTimeline := make([]time.Time, 168)
+	for i := 0; i < 168; i++ {
+		hourTimeline[i] = start.Add(time.Duration(i) * time.Hour)
+	}
+
 	// 3. Benchmark GetTimeToOpen / TimeToOpen (10k calls)
 	t0 = time.Now()
 	for i := 0; i < iterations*benchScale; i++ {
-		_, _ = oh.TimeToOpen(start.Add(time.Duration(i%168) * time.Hour))
+		_, _ = oh.TimeToOpen(hourTimeline[i%168])
 	}
 	dur3 := time.Since(t0)
 	fmt.Printf("3. TimeToOpen (%dk zero-alloc calls):      %4d ms (%.3f us/op)\n", iterations*benchScale/1000, dur3.Milliseconds(), float64(dur3.Nanoseconds())/float64(iterations*benchScale)/1000.0)
@@ -589,7 +596,7 @@ func TestRunCSBenchmarkComparison(t *testing.T) {
 	// 4. Benchmark GetTimeToOpenForDuration / TimeToOpenForDuration 4h (10k calls)
 	t0 = time.Now()
 	for i := 0; i < iterations*benchScale; i++ {
-		_, _ = oh.TimeToOpenForDuration(start.Add(time.Duration(i%168)*time.Hour), fourHours)
+		_, _ = oh.TimeToOpenForDuration(hourTimeline[i%168], fourHours)
 	}
 	dur4 := time.Since(t0)
 	fmt.Printf("4. TimeToOpenForDuration 4h (%dk calls):   %4d ms (%.3f us/op)\n", iterations*benchScale/1000, dur4.Milliseconds(), float64(dur4.Nanoseconds())/float64(iterations*benchScale)/1000.0)
@@ -597,7 +604,7 @@ func TestRunCSBenchmarkComparison(t *testing.T) {
 	// 5. Benchmark When / WhenTime 4h (10k calls)
 	t0 = time.Now()
 	for i := 0; i < iterations*benchScale; i++ {
-		_, _ = oh.WhenTime(start.Add(time.Duration(i%168)*time.Hour), fourHours)
+		_, _ = oh.WhenTime(hourTimeline[i%168], fourHours)
 	}
 	dur5 := time.Since(t0)
 	fmt.Printf("5. WhenTime 4h (%dk calls):                %4d ms (%.3f us/op)\n", iterations*benchScale/1000, dur5.Milliseconds(), float64(dur5.Nanoseconds())/float64(iterations*benchScale)/1000.0)
@@ -605,7 +612,7 @@ func TestRunCSBenchmarkComparison(t *testing.T) {
 	// 6. Benchmark NextDur (10k calls)
 	t0 = time.Now()
 	for i := 0; i < iterations*benchScale; i++ {
-		_, _ = oh.NextDur(start.Add(time.Duration(i%168) * time.Hour))
+		_, _ = oh.NextDur(hourTimeline[i%168])
 	}
 	dur6 := time.Since(t0)
 	fmt.Printf("6. NextDur (%dk calls):                    %4d ms (%.3f us/op)\n", iterations*benchScale/1000, dur6.Milliseconds(), float64(dur6.Nanoseconds())/float64(iterations*benchScale)/1000.0)
@@ -613,7 +620,7 @@ func TestRunCSBenchmarkComparison(t *testing.T) {
 	// 7. Benchmark NextDate (10k calls)
 	t0 = time.Now()
 	for i := 0; i < iterations*benchScale; i++ {
-		_, _ = oh.NextDate(start.Add(time.Duration(i%168) * time.Hour))
+		_, _ = oh.NextDate(hourTimeline[i%168])
 	}
 	dur7 := time.Since(t0)
 	fmt.Printf("7. NextDate (%dk calls):                   %4d ms (%.3f us/op)\n", iterations*benchScale/1000, dur7.Milliseconds(), float64(dur7.Nanoseconds())/float64(iterations*benchScale)/1000.0)
