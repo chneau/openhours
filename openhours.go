@@ -1,6 +1,7 @@
 package openhours
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -39,7 +40,43 @@ var (
 	// expression, so that hot repeated parses skip the RWMutex and hash lookup.
 	// It is safe for concurrent use (atomic pointer publication).
 	l1Cache atomic.Pointer[parseSlot]
+
+	// parseCache is a lock-free, direct-mapped cache of resolved expressions.
+	// It spreads interned lookups over many slots so that a working set of
+	// distinct-but-recursively-queried expressions (e.g. a cycle of schedule
+	// strings) resolves without taking internMu or allocating a fresh slot on
+	// every call. It stores the *same* interned pointer that internPool holds,
+	// so interning identity is preserved.
+	parseCache [parseCacheSize]atomic.Pointer[parseSlot]
 )
+
+const (
+	parseCacheSize = 1024 // power of two
+	parseCacheMask = parseCacheSize - 1
+)
+
+// hashString is a cheap, allocation-free hash used only to pick a slot in
+// parseCache. Hash quality affects only the hit rate (collisions merely fall
+// back to internPool), never correctness, since entries are verified by a full
+// string comparison.
+func hashString(s string) uint64 {
+	const mul = 0x9e3779b97f4a7c15
+	n := len(s)
+	h := uint64(n) ^ mul
+	i := 0
+	for ; i+8 <= n; i += 8 {
+		h ^= uint64(s[i]) | uint64(s[i+1])<<8 | uint64(s[i+2])<<16 | uint64(s[i+3])<<24 |
+			uint64(s[i+4])<<32 | uint64(s[i+5])<<40 | uint64(s[i+6])<<48 | uint64(s[i+7])<<56
+	}
+	var t uint64
+	for ; i < n; i++ {
+		t = t<<8 | uint64(s[i])
+	}
+	h ^= t
+	h *= mul
+	h ^= h >> 32
+	return h
+}
 
 type parseSlot struct {
 	expr string
@@ -93,11 +130,22 @@ func Parse(expression string) *OpeningHours {
 		}
 	}
 
+	// Second-level direct-mapped cache: absorbs a working set of distinct
+	// expressions that the one-slot l1Cache cannot hold, without the RWMutex or
+	// the per-hit parseSlot allocation the internPool path incurs.
+	cslot := &parseCache[hashString(expression)&parseCacheMask]
+	if s := cslot.Load(); s != nil && s.expr == expression {
+		l1Cache.Store(s)
+		return s.oh
+	}
+
 	internMu.RLock()
 	cached, ok := internPool[expression]
 	internMu.RUnlock()
 	if ok {
-		l1Cache.Store(&parseSlot{expression, cached})
+		ps := &parseSlot{expression, cached}
+		cslot.Store(ps)
+		l1Cache.Store(ps)
 		return cached
 	}
 
@@ -106,7 +154,9 @@ func Parse(expression string) *OpeningHours {
 	internMu.Lock()
 	defer internMu.Unlock()
 	if cached, ok := internPool[expression]; ok {
-		l1Cache.Store(&parseSlot{expression, cached})
+		ps := &parseSlot{expression, cached}
+		cslot.Store(ps)
+		l1Cache.Store(ps)
 		return cached
 	}
 
@@ -144,7 +194,9 @@ func Parse(expression string) *OpeningHours {
 	}
 
 	internPool[expression] = oh
-	l1Cache.Store(&parseSlot{expression, oh})
+	ps := &parseSlot{expression, oh}
+	cslot.Store(ps)
+	l1Cache.Store(ps)
 	return oh
 }
 
@@ -618,9 +670,29 @@ var (
 )
 
 // hasJSONEscape reports whether raw string content contains a backslash or a
-// control character, i.e. input that needs JSON unescaping.
+// control character, i.e. input that needs JSON unescaping. It scans 8 bytes at
+// a time using SWAR tricks (no per-byte branches) and falls back to a scalar
+// loop for the tail.
 func hasJSONEscape(s []byte) bool {
-	for _, c := range s {
+	const (
+		lo = 0x0101010101010101
+		hi = 0x8080808080808080
+	)
+	i := 0
+	for ; i+8 <= len(s); i += 8 {
+		v := binary.LittleEndian.Uint64(s[i : i+8])
+		// Any byte < 0x20 (control char)?
+		if (v-0x2020202020202020)&^v&hi != 0 {
+			return true
+		}
+		// Any byte == '\\' (0x5C)?
+		x := v ^ 0x5C5C5C5C5C5C5C5C
+		if (x-lo)&^x&hi != 0 {
+			return true
+		}
+	}
+	for ; i < len(s); i++ {
+		c := s[i]
 		if c == '\\' || c < 0x20 {
 			return true
 		}
@@ -638,13 +710,9 @@ func stringEqualsBytes(s string, b []byte) bool {
 	if len(b) == 0 {
 		return true
 	}
-	sb := unsafe.Slice(unsafe.StringData(s), len(s))
-	for i := range b {
-		if sb[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	// Compare via a read-only string view of b so the equality test lowers to
+	// runtime.memequal (SIMD on amd64) instead of a scalar byte loop.
+	return s == unsafe.String(unsafe.SliceData(b), len(b))
 }
 
 // decodeEscaped unescapes a JSON string that contains backslash escapes.
@@ -753,11 +821,12 @@ func getWeekMinute(dt time.Time) (int, time.Duration) {
 			nsec = int64(tt.wall)
 			unixSec = tt.ext + internalToUnix
 		}
-		weekMin := int((unixSec/60 + 4320) % minutesPerWeek)
+		q := unixSec / 60
+		weekMin := int((q + 4320) % minutesPerWeek)
 		if weekMin < 0 {
 			weekMin += minutesPerWeek
 		}
-		subMinute := time.Duration(unixSec%60)*time.Second + time.Duration(nsec)
+		subMinute := time.Duration(unixSec-q*60)*time.Second + time.Duration(nsec)
 		return weekMin, subMinute
 	}
 	return getWeekMinuteNonUTC(dt)
