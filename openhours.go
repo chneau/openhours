@@ -170,6 +170,13 @@ func Parse(expression string) *OpeningHours {
 		return s.oh
 	}
 
+	return parseSlow(expression, cslot)
+}
+
+// parseSlow holds the cold path (intern-pool probes and the actual parse). It
+// is a separate function so the large `rulesBuf` scratch array no longer sizes
+// Parse's stack frame on the hot cache-hit path.
+func parseSlow(expression string, cslot *atomic.Pointer[parseSlot]) *OpeningHours {
 	internMu.RLock()
 	cached, ok := internPool[expression]
 	internMu.RUnlock()
@@ -324,7 +331,9 @@ func (oh *OpeningHours) Windows() []TimeWindow {
 
 // IsOpen returns true if the specified time is within opening hours.
 func (oh *OpeningHours) IsOpen(t time.Time) bool {
-	if oh == nil || len(oh.windows) == 0 {
+	// No empty-window guard: an empty schedule has an all-zero bitmask, so the
+	// bit test below already returns false.
+	if oh == nil {
 		return false
 	}
 	tt := (*timeRepr)(unsafe.Pointer(&t))
