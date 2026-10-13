@@ -138,7 +138,29 @@ type OpeningHours struct {
 	// the escape scan when a cached expression already matches the raw JSON
 	// bytes, which implies the bytes need no unescaping.
 	plainText bool
+	// qtab is a lazily built, per-minute query table: for week-minute m,
+	// query[m] packs the open state in bit 15 and the number of minutes from m
+	// to the next state transition in bits 0-14. It is a pure function of
+	// windows, so it is never consulted to decide anything the bitmask and
+	// windows do not already imply — it only replaces the search plus the
+	// window/bitmask loads on the TimeToOpen/NextDur/NextDate paths. It is
+	// built on the first query that needs it (parse-only workloads never pay
+	// for it) and published atomically: a concurrent reader observes either nil
+	// (and builds its own identical copy) or a fully initialized, immutable
+	// table, so the struct stays safe to share.
+	qtab atomic.Pointer[queryTable]
 }
+
+// queryTable is the per-minute query table described on OpeningHours.qtab. It
+// is indexed by a week minute in [0, 10080); each entry fits in a uint16
+// because the largest transition delta (a full week plus a partial window) is
+// at most 20160, and the open flag occupies the top bit.
+type queryTable [minutesPerWeek]uint16
+
+const (
+	queryOpenBit  = uint16(1) << 15
+	queryDeltaMax = (1 << 15) - 1 // 32767; every transition delta is <= 10080
+)
 
 // Parse parses an OSM opening_hours expression string and returns an *OpeningHours instance.
 // If the expression is invalid or empty, it returns a safe instance with empty schedule (IsOpen = false).
@@ -427,8 +449,19 @@ func (oh *OpeningHours) getTimeToOpen(from time.Time) (time.Duration, bool) {
 	}
 
 	t, subMinute := getWeekMinute(from)
-	idx := oh.findFirstWindowStartingAtOrAfter(t)
+	// One table load replaces the window search and the window load: the open
+	// bit says whether m is open, otherwise the packed delta is the minutes
+	// from m to the next opening.
+	if q, ok := oh.queryEntry(t); ok {
+		if q&queryOpenBit != 0 {
+			return 0, true
+		}
+		return time.Duration(q&queryDeltaMax)*time.Minute - subMinute, true
+	}
 
+	// Unreachable in practice (m is always a valid week minute), kept for parity
+	// with the search-based path.
+	idx := oh.findFirstWindowStartingAtOrAfter(t)
 	if idx < len(oh.windows) {
 		w := oh.windows[idx]
 		if w.Start <= t {
@@ -437,7 +470,6 @@ func (oh *OpeningHours) getTimeToOpen(from time.Time) (time.Duration, bool) {
 		d := time.Duration(w.Start-t)*time.Minute - subMinute
 		return d, true
 	}
-
 	d := time.Duration((minutesPerWeek-t)+oh.windows[0].Start)*time.Minute - subMinute
 	return d, true
 }
@@ -556,6 +588,13 @@ func (oh *OpeningHours) NextDur(t time.Time) (bool, time.Duration) {
 	}
 
 	min, subMinute := getWeekMinute(t)
+	// One table load yields both the open state and the minutes until the next
+	// state transition, so the window search and load are no longer needed.
+	if q, ok := oh.queryEntry(min); ok {
+		dur := time.Duration(q&queryDeltaMax)*time.Minute - subMinute
+		return q&queryOpenBit != 0, dur
+	}
+
 	idx := oh.findFirstWindowStartingAtOrAfter(min)
 	if idx < len(oh.windows) {
 		w := oh.windows[idx]
@@ -584,52 +623,51 @@ func (oh *OpeningHours) NextDate(t time.Time) (bool, time.Time) {
 	return isOpen, addDuration(t, dur)
 }
 
-func (oh *OpeningHours) findWindowIndex(t int) int {
-	windows := oh.windows
+// buildQueryTable builds the per-minute query table described on
+// OpeningHours.qtab. windows must be sorted by Start (and therefore by End,
+// since they are disjoint). For each week-minute m it stores the open state in
+// bit 15 and, in bits 0-14, the number of minutes from m to the next state
+// transition — exactly the value NextDur reports. It reproduces NextDur's
+// week-wrap case (last window reaching minute 10080 while the first starts at
+// 0) verbatim.
+func buildQueryTable(windows []TimeWindow) *queryTable {
+	tbl := new(queryTable)
 	n := len(windows)
-	if n == 0 {
-		return -1
-	}
-	if n <= 3 {
-		if t < windows[0].Start {
-			return -1
+	idx := 0
+	for m := 0; m < minutesPerWeek; m++ {
+		for idx < n && windows[idx].End <= m {
+			idx++
 		}
-		if t < windows[0].End {
-			return 0
-		}
-		if n > 1 {
-			if t < windows[1].Start {
-				return -1
+		switch {
+		case idx < n && windows[idx].Start <= m:
+			end := windows[idx].End
+			if idx == n-1 && end == minutesPerWeek && windows[0].Start == 0 {
+				end = minutesPerWeek + windows[0].End
 			}
-			if t < windows[1].End {
-				return 1
-			}
-			if n > 2 {
-				if t < windows[2].Start {
-					return -1
-				}
-				if t < windows[2].End {
-					return 2
-				}
-			}
-		}
-		return -1
-	}
-	_ = windows[n-1] // BCE
-	low := 0
-	high := n - 1
-	for low <= high {
-		mid := int(uint(low+high) >> 1)
-		w := &windows[mid]
-		if t < w.Start {
-			high = mid - 1
-		} else if t < w.End {
-			return mid
-		} else {
-			low = mid + 1
+			tbl[m] = queryOpenBit | uint16(end-m)
+		case idx < n:
+			tbl[m] = uint16(windows[idx].Start - m)
+		default:
+			tbl[m] = uint16((minutesPerWeek - m) + windows[0].Start)
 		}
 	}
-	return -1
+	return tbl
+}
+
+// queryEntry returns the packed open-state/transition-delta entry for
+// week-minute m, building and atomically publishing the table on first use. The
+// second result is false only when the table cannot apply (empty schedule or an
+// out-of-range minute), in which case callers fall back to the search.
+func (oh *OpeningHours) queryEntry(m int) (uint16, bool) {
+	if len(oh.windows) == 0 || uint(m) >= minutesPerWeek {
+		return 0, false
+	}
+	tbl := oh.qtab.Load()
+	if tbl == nil {
+		tbl = buildQueryTable(oh.windows)
+		oh.qtab.Store(tbl)
+	}
+	return tbl[m], true
 }
 
 func (oh *OpeningHours) findFirstWindowStartingAtOrAfter(t int) int {
@@ -673,7 +711,16 @@ func (oh *OpeningHours) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
-	*oh = *Parse(expr)
+	// Copy the interned instance's immutable fields by value rather than
+	// assigning *oh = *Parse(expr): OpeningHours now holds an atomic pointer
+	// (qtab), and a whole-struct copy would both duplicate that publication
+	// word non-atomically and trip go vet's copylocks check.
+	p := Parse(expr)
+	oh.expression = p.expression
+	oh.windows = p.windows
+	oh.bitmask = p.bitmask
+	oh.winBase = p.winBase
+	oh.plainText = p.plainText
 	return nil
 }
 
