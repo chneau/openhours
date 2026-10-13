@@ -472,6 +472,35 @@ func TestSubMinutePrecision(t *testing.T) {
 	}
 }
 
+func TestAddDurationMatchesStdlib(t *testing.T) {
+	// addDuration is a hand-inlined replica of time.Time.Add used on the hot
+	// NextDate/WhenTime paths; guard it against the standard library so the two
+	// stay bit-for-bit identical (wall/ext/loc, not just the displayed time).
+	durations := []time.Duration{
+		0, 1, time.Second, time.Minute, 37 * time.Minute, 5 * time.Hour,
+		90 * time.Minute, 7 * 24 * time.Hour, -time.Minute, -3 * time.Hour,
+		time.Duration(1<<62 - 10), time.Duration(-(1 << 62)),
+		time.Duration(1<<63 - 1), time.Duration(-1 << 63),
+	}
+	instants := []time.Time{
+		time.Date(2026, 5, 18, 10, 15, 30, 500, time.UTC),
+		time.Date(2026, 5, 18, 10, 15, 30, 500, time.Local),
+		time.Date(2026, 5, 18, 10, 15, 30, 500, time.FixedZone("X", -8*3600)),
+		time.Date(1969, 12, 31, 23, 59, 30, 0, time.UTC),
+		time.Date(1800, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2100, 12, 31, 23, 59, 59, 999999999, time.UTC),
+		time.Now(), // carries a monotonic clock reading
+	}
+	for _, base := range instants {
+		for _, d := range durations {
+			got, want := addDuration(base, d), base.Add(d)
+			if got != want {
+				t.Fatalf("addDuration(%v, %v) = %v, want %v", base, d, got, want)
+			}
+		}
+	}
+}
+
 func TestNilSafety(t *testing.T) {
 	var nilOH *OpeningHours
 	now := time.Now()

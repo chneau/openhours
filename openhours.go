@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"math/bits"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +20,11 @@ const (
 	nsecShift      = 30
 	nsecMask       = (1 << nsecShift) - 1
 	internalToUnix = -62135596800
+
+	// wallToInternal converts the packed wall-clock seconds field (seconds since
+	// 1885-01-01, used when the monotonic bit is set) into the internal epoch
+	// (seconds since year 1). It mirrors time's own wallToInternal.
+	wallToInternal = (1884*365 + 1884/4 - 1884/100 + 1884/400) * 86400
 )
 
 type timeRepr struct {
@@ -33,7 +39,7 @@ var (
 	zeroDuration    time.Duration
 	weekdayToDayIdx = [7]int{6, 0, 1, 2, 3, 4, 5} // Sunday (0) -> 6, Monday (1) -> 0, ...
 
-	emptyOH      = &OpeningHours{expression: "", windows: nil}
+	emptyOH      = &OpeningHours{expression: "", windows: nil, plainText: true}
 	alwaysOpenOH = makeAlwaysOpenOH()
 
 	// l1Cache is a small, lock-free one-slot cache of the most recently resolved
@@ -59,21 +65,32 @@ const (
 // parseCache. Hash quality affects only the hit rate (collisions merely fall
 // back to internPool), never correctness, since entries are verified by a full
 // string comparison.
+//
+// For strings of at least 8 bytes it reads only the first and last 8 bytes
+// (plus the length), so the cost is constant regardless of expression length —
+// a long expression hashes as fast as a short one. Shorter strings fall back to
+// a byte-wise accumulation.
 func hashString(s string) uint64 {
-	const mul = 0x9e3779b97f4a7c15
+	const (
+		mul = 0x9e3779b97f4a7c15
+		mix = 0x9E3779B185EBCA87
+	)
 	n := len(s)
-	h := uint64(n) ^ mul
-	i := 0
-	for ; i+8 <= n; i += 8 {
-		h ^= uint64(s[i]) | uint64(s[i+1])<<8 | uint64(s[i+2])<<16 | uint64(s[i+3])<<24 |
-			uint64(s[i+4])<<32 | uint64(s[i+5])<<40 | uint64(s[i+6])<<48 | uint64(s[i+7])<<56
+	if n >= 8 {
+		p := unsafe.Pointer(unsafe.StringData(s))
+		a := *(*uint64)(p)
+		b := *(*uint64)(unsafe.Add(p, n-8))
+		h := (a*mix ^ bits.RotateLeft64(b, 31) ^ uint64(n)*mul)
+		h ^= h >> 29
+		h *= mul
+		h ^= h >> 32
+		return h
 	}
 	var t uint64
-	for ; i < n; i++ {
+	for i := 0; i < n; i++ {
 		t = t<<8 | uint64(s[i])
 	}
-	h ^= t
-	h *= mul
+	h := (t ^ uint64(n)) * mul
 	h ^= h >> 32
 	return h
 }
@@ -87,6 +104,7 @@ func makeAlwaysOpenOH() *OpeningHours {
 	oh := &OpeningHours{
 		expression: "24/7",
 		windows:    []TimeWindow{{Start: 0, End: minutesPerWeek}},
+		plainText:  true,
 	}
 	for i := range oh.bitmask {
 		oh.bitmask[i] = ^uint64(0)
@@ -107,6 +125,19 @@ type OpeningHours struct {
 	expression string
 	windows    []TimeWindow
 	bitmask    [158]uint64
+	// winBase is a precomputed search accelerator for the (sorted, disjoint)
+	// windows slice: winBase[w] is the number of windows whose End is <= w*64,
+	// i.e. a lower bound on findFirstWindowStartingAtOrAfter(t) for every
+	// t in [w*64, w*64+63]. It turns the branchy binary search into one table
+	// load plus at most a couple of comparisons. It is derived data only:
+	// it is never consulted for the query result, only to skip windows that
+	// provably cannot be the answer.
+	winBase [158]uint8
+	// plainText reports whether expression contains no JSON escape-triggering
+	// bytes (no backslash and no control character). It lets DecodeJSON skip
+	// the escape scan when a cached expression already matches the raw JSON
+	// bytes, which implies the bytes need no unescaping.
+	plainText bool
 }
 
 // Parse parses an OSM opening_hours expression string and returns an *OpeningHours instance.
@@ -190,7 +221,13 @@ func Parse(expression string) *OpeningHours {
 		}
 		windows := bakeRules(rules)
 		bm := bakeBitmask(windows)
-		oh = &OpeningHours{expression: expression, windows: windows, bitmask: bm}
+		oh = &OpeningHours{
+			expression: expression,
+			windows:    windows,
+			bitmask:    bm,
+			winBase:    bakeWinBase(windows),
+			plainText:  isPlainJSON(expression),
+		}
 	}
 
 	internPool[expression] = oh
@@ -233,6 +270,34 @@ func bakeBitmask(windows []TimeWindow) [158]uint64 {
 	return bm
 }
 
+// bakeWinBase builds the window-search accelerator described on OpeningHours.winBase.
+// windows must be sorted by Start (and therefore by End, since they are disjoint).
+func bakeWinBase(windows []TimeWindow) [158]uint8 {
+	var base [158]uint8
+	j := 0
+	for w := 0; w < len(base); w++ {
+		lim := w << 6
+		for j < len(windows) && windows[j].End <= lim {
+			j++
+		}
+		base[w] = uint8(j)
+	}
+	return base
+}
+
+// isPlainJSON reports whether s contains neither a backslash nor a control
+// character, i.e. whether it would survive a JSON string round-trip verbatim.
+// It is evaluated once per unique parsed expression.
+func isPlainJSON(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\\' || c < 0x20 {
+			return false
+		}
+	}
+	return true
+}
+
 // Raw returns the raw expression string.
 func (oh *OpeningHours) Raw() string {
 	if oh == nil {
@@ -262,7 +327,7 @@ func (oh *OpeningHours) IsOpen(t time.Time) bool {
 	if oh == nil || len(oh.windows) == 0 {
 		return false
 	}
-	tt := *(*timeRepr)(unsafe.Pointer(&t))
+	tt := (*timeRepr)(unsafe.Pointer(&t))
 	var weekMin int
 	if tt.loc == nil || tt.loc == time.UTC {
 		var unixSec int64
@@ -271,9 +336,15 @@ func (oh *OpeningHours) IsOpen(t time.Time) bool {
 		} else {
 			unixSec = tt.ext + internalToUnix
 		}
-		weekMin = int((unixSec/60 + 4320) % minutesPerWeek)
-		if weekMin < 0 {
-			weekMin += minutesPerWeek
+		if unixSec >= 0 {
+			// Unsigned division by the constant 60 lowers to a single
+			// multiply-shift with no sign correction, unlike the signed form.
+			weekMin = int((uint64(unixSec)/60 + 4320) % minutesPerWeek)
+		} else {
+			weekMin = int((unixSec/60 + 4320) % minutesPerWeek)
+			if weekMin < 0 {
+				weekMin += minutesPerWeek
+			}
 		}
 	} else {
 		weekMin = timeToWeekMinuteNonUTC(t)
@@ -314,7 +385,7 @@ func (oh *OpeningHours) GetCurrentShiftEnd(t time.Time) *time.Time {
 		diffMin = (minutesPerWeek - min) + oh.windows[0].End
 	}
 
-	res := t.Add(time.Duration(diffMin)*time.Minute - subMinute)
+	res := addDuration(t, time.Duration(diffMin)*time.Minute-subMinute)
 	return &res
 }
 
@@ -463,7 +534,7 @@ func (oh *OpeningHours) WhenTime(from time.Time, duration time.Duration) (time.T
 	if d == 0 {
 		return from, true
 	}
-	return from.Add(d), true
+	return addDuration(from, d), true
 }
 
 // NextDur returns whether currently open, and the duration until state changes (shift ends or opens).
@@ -501,7 +572,7 @@ func (oh *OpeningHours) NextDur(t time.Time) (bool, time.Duration) {
 // NextDate returns whether currently open, and the time when the status changes.
 func (oh *OpeningHours) NextDate(t time.Time) (bool, time.Time) {
 	isOpen, dur := oh.NextDur(t)
-	return isOpen, t.Add(dur)
+	return isOpen, addDuration(t, dur)
 }
 
 func (oh *OpeningHours) findWindowIndex(t int) int {
@@ -555,45 +626,27 @@ func (oh *OpeningHours) findWindowIndex(t int) int {
 func (oh *OpeningHours) findFirstWindowStartingAtOrAfter(t int) int {
 	windows := oh.windows
 	n := len(windows)
-	if n <= 4 {
-		if n == 0 {
-			return 0
-		}
-		if windows[0].End > t {
-			return 0
-		}
-		if n > 1 {
-			if windows[1].End > t {
-				return 1
-			}
-			if n > 2 {
-				if windows[2].End > t {
-					return 2
-				}
-				if n > 3 && windows[3].End > t {
-					return 3
-				}
-			}
-		}
-		return n
+	if n == 0 {
+		return 0
 	}
-	_ = windows[n-1] // BCE
-	low := 0
-	high := n - 1
-	result := n
-	for low <= high {
-		mid := int(uint(low+high) >> 1)
-		if windows[mid].End > t {
-			result = mid
-			if mid == 0 {
-				break
-			}
-			high = mid - 1
+	// winBase gives a lower bound on the answer for the whole 64-minute word
+	// containing t, so the scan below only re-examines the few windows whose
+	// End actually falls inside (or just after) that word.
+	word := t >> 6
+	if uint(word) >= uint(len(oh.winBase)) {
+		if t < 0 {
+			word = 0
 		} else {
-			low = mid + 1
+			word = len(oh.winBase) - 1
 		}
 	}
-	return result
+	i := int(oh.winBase[word])
+	for ; i < n; i++ {
+		if windows[i].End > t {
+			return i
+		}
+	}
+	return n
 }
 
 // MarshalJSON serializes OpeningHours as a JSON string with its expression.
@@ -622,12 +675,20 @@ func (oh *OpeningHours) UnmarshalJSON(data []byte) error {
 // JSON strings are handled by a small hand-rolled scanner instead of
 // encoding/json.
 func DecodeJSON(data []byte) (*OpeningHours, error) {
-	if len(data) >= 2 && data[0] == '"' && data[len(data)-1] == '"' && !hasJSONEscape(data[1:len(data)-1]) {
-		inner := data[1 : len(data)-1]
-		if slot := l1Cache.Load(); slot != nil && stringEqualsBytes(slot.expr, inner) {
+	if n := len(data); n >= 2 && data[0] == '"' && data[n-1] == '"' {
+		inner := data[1 : n-1]
+		// If a cached expression equals the raw bytes *and* is itself known to
+		// be escape-free, then those raw bytes contain no backslash and no
+		// control character: a backslash in the bytes could not equal the
+		// escape-free expression, so unescaping is provably a no-op and the
+		// decode result is exactly that cached expression. Checking the cache
+		// first therefore skips the escape scan on the hot repeated-decode path.
+		if slot := l1Cache.Load(); slot != nil && slot.oh.plainText && stringEqualsBytes(slot.expr, inner) {
 			return slot.oh, nil
 		}
-		return Parse(string(inner)), nil
+		if !hasJSONEscape(inner) {
+			return Parse(string(inner)), nil
+		}
 	}
 	expr, err := decodeExpression(data)
 	if err != nil {
@@ -809,11 +870,91 @@ func decodeHex4(b []byte) (rune, bool) {
 	return r, true
 }
 
+// addDuration is a drop-in replacement for t.Add(d) that operates on the raw
+// time representation. It reproduces the standard library's algorithm exactly
+// (including its monotonic-clock retention and saturation behaviour) while
+// removing the extra call into time.addSec and the 24-byte Time copy that the
+// stdlib's Add pays on every NextDate/When result. Instants that carry a
+// monotonic clock reading are rare here and take the addDurationMono path.
+func addDuration(t time.Time, d time.Duration) time.Time {
+	tt := (*timeRepr)(unsafe.Pointer(&t))
+	if tt.wall&hasMonotonic != 0 {
+		return addDurationMono(t, d)
+	}
+	// time.Time.Add, sub-second part: fold d's nanoseconds into wall's nsec field.
+	dsec := int64(d / 1e9)
+	nsec := int32(tt.wall&nsecMask) + int32(d%1e9)
+	if nsec >= 1e9 {
+		dsec++
+		nsec -= 1e9
+	} else if nsec < 0 {
+		dsec--
+		nsec += 1e9
+	}
+	tt.wall = tt.wall&^nsecMask | uint64(nsec)
+	// Without a monotonic reading, time.Time.addSec just additively stores into
+	// ext, and the subsequent monotonic refinement is skipped.
+	tt.ext = addDurOverflow(tt.ext, dsec)
+	return t
+}
+
+// addDurationMono handles instants that carry a monotonic clock reading.
+func addDurationMono(t time.Time, d time.Duration) time.Time {
+	tt := (*timeRepr)(unsafe.Pointer(&t))
+	dsec := int64(d / 1e9)
+	nsec := int32(tt.wall&nsecMask) + int32(d%1e9)
+	if nsec >= 1e9 {
+		dsec++
+		nsec -= 1e9
+	} else if nsec < 0 {
+		dsec--
+		nsec += 1e9
+	}
+	tt.wall = tt.wall&^nsecMask | uint64(nsec)
+
+	// time.Time.addSec(dsec).
+	seconds := int64(tt.wall<<1>>(nsecShift+1)) + dsec
+	if 0 <= seconds && seconds <= 1<<33-1 {
+		tt.wall = tt.wall&nsecMask | uint64(seconds)<<nsecShift | hasMonotonic
+	} else {
+		// stripMono: the packed seconds field overflowed, move to ext.
+		tt.ext = wallToInternal + int64(tt.wall<<1>>(nsecShift+1))
+		tt.wall &= nsecMask
+		tt.ext = addDurOverflow(tt.ext, dsec)
+	}
+
+	if tt.wall&hasMonotonic != 0 {
+		te := tt.ext + int64(d)
+		if d < 0 && te > tt.ext || d > 0 && te < tt.ext {
+			// Monotonic reading out of range; degrade to wall-only.
+			tt.ext = wallToInternal + int64(tt.wall<<1>>(nsecShift+1))
+			tt.wall &= nsecMask
+		} else {
+			tt.ext = te
+		}
+	}
+	return t
+}
+
+// addDurOverflow mirrors time's saturating add of ext and d.
+func addDurOverflow(ext, d int64) int64 {
+	sum := ext + d
+	if (sum > ext) == (d > 0) {
+		return sum
+	}
+	if d > 0 {
+		return 1<<63 - 1
+	}
+	return -(1<<63 - 1)
+}
+
+// getWeekMinute returns the minute within the week (Monday 00:00 == 0) and the
+// sub-minute remainder of dt. The UTC fast path keeps the division unsigned,
+// which the compiler lowers to a single multiply-shift without sign fix-ups.
 func getWeekMinute(dt time.Time) (int, time.Duration) {
-	tt := *(*timeRepr)(unsafe.Pointer(&dt))
+	tt := (*timeRepr)(unsafe.Pointer(&dt))
 	if tt.loc == nil || tt.loc == time.UTC {
-		var unixSec int64
-		var nsec int64
+		var unixSec, nsec int64
 		if tt.wall&hasMonotonic != 0 {
 			nsec = int64(tt.wall & nsecMask)
 			unixSec = int64(tt.wall<<1>>(nsecShift+1)) + internalToUnix
@@ -821,13 +962,17 @@ func getWeekMinute(dt time.Time) (int, time.Duration) {
 			nsec = int64(tt.wall)
 			unixSec = tt.ext + internalToUnix
 		}
+		if unixSec >= 0 {
+			u := uint64(unixSec)
+			q := u / 60
+			return int((q + 4320) % minutesPerWeek), time.Duration(u-q*60)*time.Second + time.Duration(nsec)
+		}
 		q := unixSec / 60
 		weekMin := int((q + 4320) % minutesPerWeek)
 		if weekMin < 0 {
 			weekMin += minutesPerWeek
 		}
-		subMinute := time.Duration(unixSec-q*60)*time.Second + time.Duration(nsec)
-		return weekMin, subMinute
+		return weekMin, time.Duration(unixSec-q*60)*time.Second + time.Duration(nsec)
 	}
 	return getWeekMinuteNonUTC(dt)
 }
